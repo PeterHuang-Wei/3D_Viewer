@@ -39,6 +39,7 @@ class Scene:
         self._meshes, self._edge_idx, self._edge_polys = [], [], []
         self._press = None
         self.locked = None  # 鎖定的工作平面 dict(origin/xdir/normal)
+        self.lock_id = None  # 若鎖定的是參考面,其編號
         it = self.plotter.iren.interactor
         self._tag_press = it.AddObserver("LeftButtonPressEvent", self._on_press, 10.0)
         it.AddObserver("LeftButtonReleaseEvent", self._on_release, 10.0)
@@ -78,6 +79,7 @@ class Scene:
                     edges, color="black",
                     line_width=1.5, name=f"edge{i}",
                 )
+        self._draw_planes()
         self._draw_lock(render=False)
         if reset_camera:
             self.set_view("等角視")
@@ -203,9 +205,33 @@ class Scene:
         self.plotter.render()
 
     # --- 鎖定平面 ---
-    def set_lock(self, wp) -> None:
-        self.locked = wp
+    def set_lock(self, wp, plane_id=None) -> None:
+        self.locked, self.lock_id = wp, plane_id
+        self._draw_planes()
         self._draw_lock()
+
+    def _plane_size(self) -> float:
+        sizes = [np.linalg.norm(np.array(m.bounds[1::2]) - np.array(m.bounds[0::2]))
+                 for m in self._meshes if m.n_cells]
+        return max(sizes, default=40.0) * 0.6
+
+    def _draw_planes(self) -> None:
+        """畫出所有參考面(被鎖定的那個由 _draw_lock 以青色畫)。"""
+        import pyvista as pv
+        for name in [n for n in self.plotter.renderer.actors if str(n).startswith("refplane")]:
+            self.plotter.remove_actor(name, render=False)
+        if self._doc is None:
+            return
+        size = self._plane_size()
+        for pid, pname, wp in self._doc.planes:
+            if pid == self.lock_id:
+                continue
+            o, n = np.array(wp["origin"]), np.array(wp["normal"])
+            self.plotter.add_mesh(pv.Plane(center=o, direction=n, i_size=size, j_size=size),
+                                  color="#7aa2ff", opacity=0.18, name=f"refplane{pid}", pickable=False)
+            self.plotter.add_point_labels([o], [pname], name=f"refplane_label{pid}",
+                                          font_size=12, shape=None, show_points=False,
+                                          always_visible=True, pickable=False)
 
     def _draw_lock(self, render: bool = True) -> None:
         self.plotter.remove_actor("lock_plane", render=False)
@@ -213,9 +239,7 @@ class Scene:
         if self.locked:
             import pyvista as pv
             origin, normal = np.array(self.locked["origin"]), np.array(self.locked["normal"])
-            sizes = [np.linalg.norm(np.array(m.bounds[1::2]) - np.array(m.bounds[0::2]))
-                     for m in self._meshes if m.n_cells]
-            size = max(sizes, default=40.0) * 0.6
+            size = self._plane_size()
             self.plotter.add_mesh(pv.Plane(center=origin, direction=normal, i_size=size, j_size=size),
                                   color="cyan", opacity=0.25, name="lock_plane", pickable=False)
             self.plotter.add_mesh(pv.Arrow(start=origin, direction=normal, scale=size * 0.25),

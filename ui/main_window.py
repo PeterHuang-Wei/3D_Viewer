@@ -37,6 +37,11 @@ class MainWindow(QMainWindow):
             self.addDockWidget(Qt.LeftDockWidgetArea, dock)
 
         self.wp = None                                  # 鎖定的工作平面
+        self.wp_id = None                               # 若鎖定的是參考面,其編號
+        self.planes_list = QListWidget()                # 參考面清單
+        pdock = QDockWidget("參考面(F3 鎖定所選)", self)
+        pdock.setWidget(self.planes_list)
+        self.addDockWidget(Qt.LeftDockWidgetArea, pdock)
         self.lock_label = QLabel("平面:未鎖定")
         self.statusBar().addPermanentWidget(self.lock_label)
         self.scene.on_selection = self._show_selection
@@ -113,9 +118,13 @@ class MainWindow(QMainWindow):
             b.addAction(self._action(f"{op}...", lambda _, o=op: self.on_boolean(o)))
 
         pl = bar.addMenu("平面(&P)")
-        pl.addAction(self._action("鎖定所選面 / 解除鎖定", self.on_lock_toggle, "F3"))
+        pl.addAction(self._action("鎖定所選面或參考面 / 解除鎖定", self.on_lock_toggle, "F3"))
         for name in F.WORLD_PLANES:
             pl.addAction(self._action(f"鎖定 {name} 平面", lambda _, n=name: self._set_lock(F.WORLD_PLANES[n])))
+        pl.addSeparator()
+        pl.addAction(self._action("以鎖定平面建立參考面(平行/傾斜)...", self.on_create_refplane))
+        pl.addAction(self._action("移動/編輯所選參考面...", self.on_edit_refplane))
+        pl.addAction(self._action("刪除所選參考面", self.on_delete_refplane))
 
         v = bar.addMenu("檢視(&V)")
         for name in VIEWS:
@@ -250,13 +259,14 @@ class MainWindow(QMainWindow):
         self._report_errors()
 
     # --- 鎖定平面 ---
-    def _set_lock(self, wp):
-        self.wp = wp
-        self.scene.set_lock(wp)
+    def _set_lock(self, wp, plane_id=None):
+        self.wp, self.wp_id = wp, plane_id
+        self.scene.set_lock(wp, plane_id)
         if wp:
             o = ", ".join(f"{c:g}" for c in wp["origin"])
             n = ", ".join(f"{c:g}" for c in wp["normal"])
-            self.lock_label.setText(f"平面:已鎖定 原點({o}) 法向({n})")
+            tag = f"參考面{plane_id}" if plane_id is not None else "已鎖定"
+            self.lock_label.setText(f"平面:{tag} 原點({o}) 法向({n})")
         else:
             self.lock_label.setText("平面:未鎖定")
 
@@ -265,9 +275,14 @@ class MainWindow(QMainWindow):
             self._set_lock(None)
             return
         s = self.scene
+        if s.sel_body is None and (r := self.planes_list.currentRow()) >= 0:
+            pid, _, wp = self.doc.planes[r]               # 沒選面時,鎖定清單中選取的參考面
+            self._set_lock(wp, pid)
+            return
         if s.sel_body is None or len(s.sel_faces) != 1:
             QMessageBox.information(
-                self, "鎖定平面", "請先切到「選取模式:面」,在 3D 視窗選取一個平面,再按 F3")
+                self, "鎖定平面",
+                "請先在 3D 視窗用「選取模式:面」選一個平面,或在「參考面」清單選一個參考面,再按 F3")
             return
         face = self.doc.bodies[s.sel_body].shape.Faces()[next(iter(s.sel_faces))]
         try:
@@ -277,6 +292,47 @@ class MainWindow(QMainWindow):
             return
         s.clear_selection()
         self._set_lock(wp)
+
+    # --- 參考面 ---
+    def on_create_refplane(self):
+        if not self.wp:
+            QMessageBox.information(self, "參考面", "請先鎖定一個面或平面(F3 或「平面」選單)作為基準")
+            return
+        title, fields = SCHEMAS["refplane"]
+        v = ask(title, fields, self)
+        if not v:
+            return
+        params = {**v, "wp": self.wp}
+        if self.wp_id is not None:
+            params["plane_id"] = self.wp_id
+        if self._run(lambda: self.doc.add_feature("refplane", params)):
+            pid, _, wp = self.doc.planes[-1]
+            self._set_lock(wp, pid)                       # 新參考面自動成為鎖定面
+            self._update(reset_camera=False)
+
+    def _selected_plane_id(self):
+        r = self.planes_list.currentRow()
+        if r < 0 or r >= len(self.doc.planes):
+            QMessageBox.information(self, "參考面", "請先在「參考面」清單選取一個參考面")
+            return None
+        return self.doc.planes[r][0]
+
+    def on_edit_refplane(self):
+        pid = self._selected_plane_id()
+        if pid is None:
+            return
+        k = next(i for i, f in enumerate(self.doc.features) if f.kind == "refplane" and pid in f.out_ids)
+        title, fields = SCHEMAS["refplane"]
+        v = ask("移動/編輯:" + title, fields, self, initial=self.doc.features[k].params)
+        if v:
+            self._run(lambda: self.doc.edit_feature(k, v))
+
+    def on_delete_refplane(self):
+        pid = self._selected_plane_id()
+        if pid is not None:
+            if self.wp_id == pid:
+                self._set_lock(None)
+            self._run(lambda: self.doc.add_feature("delete", {"body": pid}))
 
     @staticmethod
     def _fields(kind, placed):
@@ -299,6 +355,8 @@ class MainWindow(QMainWindow):
         if v:
             if self.wp and kind in PLACED:
                 v["wp"] = self.wp
+                if self.wp_id is not None:
+                    v["plane_id"] = self.wp_id
             self._run(lambda: self.doc.add_feature(kind, v))
             self.scene.set_view("等角視") if len(self.doc.bodies) == 1 else None
 
@@ -318,6 +376,8 @@ class MainWindow(QMainWindow):
         if v:
             if self.wp and kind in PLACED:
                 v["wp"] = self.wp
+                if self.wp_id is not None:
+                    v["plane_id"] = self.wp_id
             self._run(lambda: self.doc.add_feature(kind, {**v, "body": bid}))
 
     def on_delete_body(self):
@@ -384,9 +444,19 @@ class MainWindow(QMainWindow):
         self.scene.refresh(self.doc, reset_camera=False)
 
     def _update(self, reset_camera=True):
+        if self.wp_id is not None:                         # 鎖定的參考面被移動/刪除時同步
+            plane = next((p for p in self.doc.planes if p[0] == self.wp_id), None)
+            if plane:
+                self.wp = plane[2]
+            else:
+                self.wp_id = None
+            self.scene.locked, self.scene.lock_id = self.wp, self.wp_id
+            self._set_lock(self.wp, self.wp_id)
         self.scene.refresh(self.doc, reset_camera and bool(self.doc.bodies))
         self.tree.clear()
         self.tree.addItems([f"{b.id}: {b.name}" for b in self.doc.bodies])
+        self.planes_list.clear()
+        self.planes_list.addItems([f"{i}: {n}" for i, n, _ in self.doc.planes])
         self.history.clear()
         for k, f in enumerate(self.doc.features):
             self.history.addItem(f"{k + 1}. {f.label}" + (f"  ⚠ {f.error}" if f.error else ""))

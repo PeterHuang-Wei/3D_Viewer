@@ -54,3 +54,33 @@ def test_world_plane_matches_default():
     xz = F.to_plane(F.make_cylinder(1, 2), F.WORLD_PLANES["XZ"], ground=True)
     bb = xz.BoundingBox()
     assert abs(bb.ymin - (-2)) < 1e-6 and abs(bb.ymax) < 1e-6    # XZ 法向為 -Y
+
+
+def test_offset_plane():
+    wp = F.offset_plane(F.WORLD_PLANES["XY"], 5)
+    assert wp["origin"] == [0, 0, 5] and wp["normal"] == [0, 0, 1]
+    t = F.offset_plane(F.WORLD_PLANES["XY"], 0, rx=90)
+    assert t["normal"] == [0, -1, 0]
+
+
+def test_refplane_feature_follows_edit():
+    d = make()
+    assert d.add_feature("refplane", {"wp": F.WORLD_PLANES["XY"], "offset": 10, "rx": 0, "ry": 0}) is None
+    assert len(d.planes) == 1 and len(d.bodies) == 1
+    pid = d.planes[0][0]
+    assert d.add_feature("cylinder", {"r": 1, "h": 2, "wp": d.planes[0][2],
+                                      "plane_id": pid}) is None
+    assert abs(d.bodies[1].shape.BoundingBox().zmin - 10) < 1e-6
+    assert d.edit_feature(1, {"offset": 20}) is None             # 移動參考面 -> 圓柱跟著動
+    assert abs(d.bodies[1].shape.BoundingBox().zmin - 20) < 1e-6
+    # 以參考面為基準再建平行面(串接)
+    assert d.add_feature("refplane", {"wp": d.planes[0][2], "plane_id": pid, "offset": 5}) is None
+    assert d.planes[1][2]["origin"] == [0, 0, 25]
+    assert d.edit_feature(3, {"offset": 0}) is None
+    assert d.planes[1][2]["origin"] == [0, 0, 20]
+    d.add_feature("delete", {"body": pid})                        # 刪除第一個參考面
+    assert len(d.planes) == 1
+    # 刪除參考面後再用它建立的特徵會改用快照平面(不會失敗)
+    assert d.add_feature("cylinder", {"r": 1, "h": 2, "wp": F.WORLD_PLANES["XY"],
+                                      "plane_id": pid}) is None
+    assert abs(d.bodies[-1].shape.BoundingBox().zmin) < 1e-6

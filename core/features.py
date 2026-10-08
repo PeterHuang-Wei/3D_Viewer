@@ -190,3 +190,24 @@ def to_plane(shape: cq.Shape, wp: dict, flip: bool = False, ground: bool = False
     if flip:
         shape = shape.rotate(cq.Vector(0, 0, 0), cq.Vector(1, 0, 0), 180)
     return shape.transformShape(plane_from_dict(wp).rG)
+
+
+def _rot(v, axis, deg):
+    """羅德里格旋轉公式:向量 v 繞單位軸 axis 轉 deg 度。"""
+    import numpy as np
+    t = np.radians(deg)
+    return v * np.cos(t) + np.cross(axis, v) * np.sin(t) + axis * np.dot(axis, v) * (1 - np.cos(t))
+
+
+def offset_plane(wp: dict, offset: float, rx: float = 0.0, ry: float = 0.0) -> dict:
+    """由基準平面產生參考面:沿法向平移 offset,再依序繞平面 X 軸、Y 軸傾斜 rx、ry 度。"""
+    import numpy as np
+    x = np.asarray(wp["xdir"], float)
+    n = np.asarray(wp["normal"], float)
+    x, n = x / np.linalg.norm(x), n / np.linalg.norm(n)
+    y = np.cross(n, x)
+    o = np.asarray(wp["origin"], float) + n * offset
+    y, n = _rot(y, x, rx), _rot(n, x, rx)       # 繞 X 軸傾斜
+    x, n = _rot(x, y, ry), _rot(n, y, ry)       # 再繞(新的)Y 軸傾斜
+    r = lambda v: [round(float(c), 6) + 0.0 for c in v]  # noqa: E731
+    return {"origin": r(o), "xdir": r(x), "normal": r(n)}

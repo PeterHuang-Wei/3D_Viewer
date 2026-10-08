@@ -51,7 +51,13 @@ class Document:
     @property
     def bodies(self) -> list[Body]:
         last = self.states[-1] if self.states else {}
-        return [Body(i, n, s) for i, (n, s) in last.items()]
+        return [Body(i, n, s) for i, (n, s) in last.items() if not isinstance(s, dict)]
+
+    @property
+    def planes(self) -> list[tuple[int, str, dict]]:
+        """目前的參考面 [(編號, 名稱, 平面 dict)]。"""
+        last = self.states[-1] if self.states else {}
+        return [(i, n, s) for i, (n, s) in last.items() if isinstance(s, dict)]
 
     def clear(self) -> None:
         self.__init__()
@@ -59,7 +65,18 @@ class Document:
     # --- 重算 ---
     def _apply(self, feat: Feature, bodies: dict) -> None:
         p, k = feat.params, feat.kind
-        if k in CREATORS:
+        pid = p.get("plane_id")                    # 綁定參考面時,以參考面目前位置為準
+        if pid in bodies and isinstance(bodies[pid][1], dict):
+            p = {**p, "wp": bodies[pid][1]}
+        if k == "refplane":
+            if not p.get("wp"):
+                raise ValueError("缺少基準平面")
+            if not feat.out_ids:
+                feat.out_ids = [self._alloc()]
+            name = p.get("name") or f"參考面{feat.out_ids[0]}"
+            bodies[feat.out_ids[0]] = (name, F.offset_plane(
+                p["wp"], p["offset"], p.get("rx", 0), p.get("ry", 0)))
+        elif k in CREATORS:
             shapes = CREATORS[k](p)
             if p.get("wp") and k in PLACEABLE:
                 shapes = [F.to_plane(x, p["wp"], p.get("flip", False), PLACEABLE[k]) for x in shapes]
