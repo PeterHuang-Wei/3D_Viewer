@@ -6,6 +6,7 @@ from PyQt5.QtWidgets import (
 )
 
 from core import features as F
+from core import thread as T
 from core.model import Document
 from .dialogs import ask
 from viewer.scene import Scene, VIEWS
@@ -76,6 +77,11 @@ class MainWindow(QMainWindow):
         m2.addSeparator()
         m2.addAction(self._action("圓角...", self.on_fillet))
         m2.addAction(self._action("倒角...", self.on_chamfer))
+
+        th = bar.addMenu("螺牙(&H)")
+        th.addAction(self._action("外螺紋螺桿...", self.on_thread_rod))
+        th.addAction(self._action("內螺紋切削工具體...", self.on_thread_tool))
+        th.addAction(self._action("在實體上開螺紋孔...", self.on_thread_hole))
 
         b = bar.addMenu("布林運算(&B)")
         for op in ("聯集", "差集", "交集"):
@@ -292,6 +298,40 @@ class MainWindow(QMainWindow):
         v = ids and ask("倒角", [("d", "距離 1", "num", 2), ("d2", "距離 2(0 = 同距離 1)", "num", 0)], self)
         if v:
             self._apply(i, lambda s: F.chamfer(s, ids, v["d"], v["d2"] or None))
+
+    # --- 螺牙 ---
+    def _thread_fields(self):
+        return [("spec", "規格", "combo", T.spec_list()),
+                ("d", "自訂:公稱直徑", "num", 10), ("p", "自訂:螺距", "num", 1.5),
+                ("left", "左旋", "bool", False)]
+
+    @staticmethod
+    def _thread_dp(v):
+        return (v["d"], v["p"]) if v["spec"] == T.CUSTOM else T.parse_spec(v["spec"])
+
+    def on_thread_rod(self):
+        v = ask("外螺紋螺桿(沿 Z 軸)", self._thread_fields() + [("len", "長度", "num", 20)], self)
+        if v:
+            d, p = self._thread_dp(v)
+            self._add(lambda: T.make_threaded_rod(d, p, v["len"], v["left"]), f"螺桿 M{d:g}")
+
+    def on_thread_tool(self):
+        v = ask("內螺紋切削工具體", self._thread_fields() + [("len", "長度", "num", 20)], self)
+        if v:
+            d, p = self._thread_dp(v)
+            self._add(lambda: T.make_threaded_rod(d, p, v["len"], v["left"]), f"螺紋工具 M{d:g}")
+
+    def on_thread_hole(self):
+        i = self._current()
+        if i is None:
+            return
+        v = ask("螺紋孔(由起點沿軸向切入)", self._thread_fields() + [
+            ("depth", "孔深", "num", 10), ("axis", "孔軸向", "combo", ["Z", "X", "Y"]),
+            ("x", "起點 X", "num", 0), ("y", "起點 Y", "num", 0), ("z", "起點 Z", "num", 0)], self)
+        if v:
+            d, p = self._thread_dp(v)
+            self._apply(i, lambda s: T.threaded_hole(
+                s, d, p, v["depth"], (v["x"], v["y"], v["z"]), v["axis"], v["left"]))
 
     # --- 檢視 ---
     def on_wireframe(self, on):
