@@ -98,3 +98,46 @@ def boolean(op: str, target: cq.Shape, tool: cq.Shape) -> cq.Shape:
     if not res.Solids():
         raise ValueError("運算結果為空(兩物件可能沒有重疊)")
     return res
+
+
+# --- 倒角 / 圓角(以 shape.Edges() 的索引指定邊) ---
+def _single_solid(shape: cq.Shape) -> cq.Solid:
+    solids = shape.Solids()
+    if len(solids) != 1:
+        raise ValueError("倒角/圓角僅支援單一實體")
+    return solids[0]
+
+
+def face_edge_ids(shape: cq.Shape, face_ids) -> set[int]:
+    """面索引(shape.Faces())所包含的邊索引(shape.Edges())。"""
+    faces, edges = shape.Faces(), shape.Edges()
+    out = set()
+    for fi in face_ids:
+        fedges = faces[fi].Edges()
+        out.update(j for j, e in enumerate(edges) if any(e.isSame(fe) for fe in fedges))
+    return out
+
+
+def _pick_edges(shape, edge_ids):
+    if not edge_ids:
+        raise ValueError("請先選取要處理的邊或面")
+    edges = shape.Edges()
+    return [edges[i] for i in sorted(edge_ids)]
+
+
+def fillet(shape: cq.Shape, edge_ids, radius: float) -> cq.Shape:
+    try:
+        return _single_solid(shape).fillet(radius, _pick_edges(shape, edge_ids)).clean()
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError("圓角失敗,半徑可能過大或邊不適用") from e
+
+
+def chamfer(shape: cq.Shape, edge_ids, length: float, length2: float | None = None) -> cq.Shape:
+    try:
+        return _single_solid(shape).chamfer(length, length2, _pick_edges(shape, edge_ids)).clean()
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError("倒角失敗,距離可能過大或邊不適用") from e

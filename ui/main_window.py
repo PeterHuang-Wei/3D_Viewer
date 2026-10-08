@@ -2,7 +2,7 @@
 import os
 
 from PyQt5.QtWidgets import (
-    QMainWindow, QAction, QFileDialog, QMessageBox, QListWidget, QDockWidget,
+    QMainWindow, QAction, QActionGroup, QFileDialog, QMessageBox, QListWidget, QDockWidget,
 )
 
 from core import features as F
@@ -26,6 +26,7 @@ class MainWindow(QMainWindow):
         dock.setWidget(self.tree)
         self.addDockWidget(0x1, dock)  # 左側
 
+        self.scene.on_selection = self._show_selection
         self._build_menus()
         self._update()
 
@@ -63,6 +64,18 @@ class MainWindow(QMainWindow):
         t.addAction(self._action("旋轉...", self.on_rotate))
         t.addSeparator()
         t.addAction(self._action("刪除", self.on_delete, "Del"))
+
+        m2 = bar.addMenu("修飾(&M)")
+        grp = QActionGroup(self)
+        for text, mode in (("選取模式:關閉", "off"), ("選取模式:邊", "edge"), ("選取模式:面", "face")):
+            act = self._action(text, lambda _, md=mode: self.on_mode(md), checkable=True,
+                               checked=(mode == "off"))
+            grp.addAction(act)
+            m2.addAction(act)
+        m2.addAction(self._action("清除選取", self.scene.clear_selection, "Esc"))
+        m2.addSeparator()
+        m2.addAction(self._action("圓角...", self.on_fillet))
+        m2.addAction(self._action("倒角...", self.on_chamfer))
 
         b = bar.addMenu("布林運算(&B)")
         for op in ("聯集", "差集", "交集"):
@@ -248,6 +261,37 @@ class MainWindow(QMainWindow):
         if not v["keep"]:
             del self.doc.bodies[b]
         self._update(reset_camera=False)
+
+    # --- 選取 / 倒角 / 圓角 ---
+    def on_mode(self, mode):
+        self.scene.set_mode(mode)
+        if mode != "off":
+            self.statusBar().showMessage("在 3D 視窗點選" + ("邊" if mode == "edge" else "面")
+                                         + "(再點一次取消),完成後到「修飾」選單")
+
+    def _show_selection(self):
+        s = self.scene
+        self.statusBar().showMessage(f"已選取 {len(s.sel_edges)} 條邊、{len(s.sel_faces)} 個面")
+
+    def _selected_edge_ids(self):
+        s = self.scene
+        if s.sel_body is None or not (s.sel_edges or s.sel_faces):
+            QMessageBox.information(self, "提示", "請先用「選取模式」在 3D 視窗選取邊或面")
+            return None, None
+        shape = self.doc.bodies[s.sel_body].shape
+        return s.sel_body, set(s.sel_edges) | F.face_edge_ids(shape, s.sel_faces)
+
+    def on_fillet(self):
+        i, ids = self._selected_edge_ids()
+        v = ids and self._num("圓角", [("r", "半徑", 2)])
+        if v:
+            self._apply(i, lambda s: F.fillet(s, ids, v["r"]))
+
+    def on_chamfer(self):
+        i, ids = self._selected_edge_ids()
+        v = ids and ask("倒角", [("d", "距離 1", "num", 2), ("d2", "距離 2(0 = 同距離 1)", "num", 0)], self)
+        if v:
+            self._apply(i, lambda s: F.chamfer(s, ids, v["d"], v["d2"] or None))
 
     # --- 檢視 ---
     def on_wireframe(self, on):
