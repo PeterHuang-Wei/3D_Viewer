@@ -1,0 +1,5 @@
+cadquery
+pyvista
+pyvistaqt
+PyQt5
+numpy
