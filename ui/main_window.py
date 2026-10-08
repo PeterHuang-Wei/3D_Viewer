@@ -4,11 +4,12 @@ import os
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QMainWindow, QAction, QActionGroup, QFileDialog, QMessageBox, QListWidget,
-    QDockWidget,
+    QDockWidget, QLabel,
 )
 
 from core import features as F
 from core.model import Document
+from core.ops import PLACEABLE
 from viewer.scene import Scene, VIEWS
 from .dialogs import ask
 from .schemas import SCHEMAS
@@ -16,6 +17,7 @@ from .schemas import SCHEMAS
 STEP_FILTER = "STEP 檔案 (*.step *.stp *.STEP *.STP)"
 PROJ_FILTER = "3D Viewer 專案 (*.v3d)"
 APP = "3D Viewer"
+PLACED = set(PLACEABLE) | {"extrude", "revolve", "thread_hole"}   # 可放在鎖定平面上的特徵
 
 
 class MainWindow(QMainWindow):
@@ -34,6 +36,9 @@ class MainWindow(QMainWindow):
             dock.setWidget(widget)
             self.addDockWidget(Qt.LeftDockWidgetArea, dock)
 
+        self.wp = None                                  # 鎖定的工作平面
+        self.lock_label = QLabel("平面:未鎖定")
+        self.statusBar().addPermanentWidget(self.lock_label)
         self.scene.on_selection = self._show_selection
         self.scene.on_move = self._on_drag_move
         self._build_menus()
@@ -106,6 +111,11 @@ class MainWindow(QMainWindow):
         b = bar.addMenu("布林運算(&B)")
         for op in ("聯集", "差集", "交集"):
             b.addAction(self._action(f"{op}...", lambda _, o=op: self.on_boolean(o)))
+
+        pl = bar.addMenu("平面(&P)")
+        pl.addAction(self._action("鎖定所選面 / 解除鎖定", self.on_lock_toggle, "F3"))
+        for name in F.WORLD_PLANES:
+            pl.addAction(self._action(f"鎖定 {name} 平面", lambda _, n=name: self._set_lock(F.WORLD_PLANES[n])))
 
         v = bar.addMenu("檢視(&V)")
         for name in VIEWS:
@@ -225,7 +235,7 @@ class MainWindow(QMainWindow):
         if feat.kind not in SCHEMAS:
             QMessageBox.information(self, "提示", f"「{feat.label}」沒有可編輯的參數")
             return
-        title, fields = SCHEMAS[feat.kind]
+        title, fields = self._fields(feat.kind, bool(feat.params.get("wp")))
         v = ask("編輯:" + title, fields, self, initial=feat.params)
         if v and self._run(lambda: self.doc.edit_feature(k, v)):
             self.history.setCurrentRow(k)
@@ -239,11 +249,56 @@ class MainWindow(QMainWindow):
         self._update(reset_camera=False)
         self._report_errors()
 
+    # --- 鎖定平面 ---
+    def _set_lock(self, wp):
+        self.wp = wp
+        self.scene.set_lock(wp)
+        if wp:
+            o = ", ".join(f"{c:g}" for c in wp["origin"])
+            n = ", ".join(f"{c:g}" for c in wp["normal"])
+            self.lock_label.setText(f"平面:已鎖定 原點({o}) 法向({n})")
+        else:
+            self.lock_label.setText("平面:未鎖定")
+
+    def on_lock_toggle(self):
+        if self.wp:
+            self._set_lock(None)
+            return
+        s = self.scene
+        if s.sel_body is None or len(s.sel_faces) != 1:
+            QMessageBox.information(
+                self, "鎖定平面", "請先切到「選取模式:面」,在 3D 視窗選取一個平面,再按 F3")
+            return
+        face = self.doc.bodies[s.sel_body].shape.Faces()[next(iter(s.sel_faces))]
+        try:
+            wp = F.plane_from_face(face)
+        except ValueError as e:
+            QMessageBox.warning(self, "鎖定平面", str(e))
+            return
+        s.clear_selection()
+        self._set_lock(wp)
+
+    @staticmethod
+    def _fields(kind, placed):
+        """placed=True(在鎖定平面上)時,隱藏原本的平面/座標欄位並加入「反向」。"""
+        title, fields = SCHEMAS[kind]
+        if not placed or kind not in PLACED:
+            return title, fields
+        drop = {"extrude": ("plane", "offset"), "revolve": ("plane", "offset"),
+                "thread_hole": ("axis", "x", "y", "z")}.get(kind, ())
+        fields = [f for f in fields if f[0] not in drop]
+        if kind != "revolve":
+            label = "反向(朝實體外)" if kind == "thread_hole" else "反向(朝平面法向反側,如往實體內)"
+            fields.append(("flip", label, "bool", False))
+        return title + "(鎖定平面)", fields
+
     # --- 建立 / 修改 ---
     def on_create(self, kind):
-        title, fields = SCHEMAS[kind]
+        title, fields = self._fields(kind, bool(self.wp))
         v = ask(title, fields, self)
         if v:
+            if self.wp and kind in PLACED:
+                v["wp"] = self.wp
             self._run(lambda: self.doc.add_feature(kind, v))
             self.scene.set_view("等角視") if len(self.doc.bodies) == 1 else None
 
@@ -258,9 +313,11 @@ class MainWindow(QMainWindow):
         bid = self._current_id()
         if bid is None:
             return
-        title, fields = SCHEMAS[kind]
+        title, fields = self._fields(kind, bool(self.wp))
         v = ask(title, fields, self)
         if v:
+            if self.wp and kind in PLACED:
+                v["wp"] = self.wp
             self._run(lambda: self.doc.add_feature(kind, {**v, "body": bid}))
 
     def on_delete_body(self):

@@ -27,8 +27,11 @@ def make_torus(major, minor) -> cq.Shape:
 
 
 # --- 草圖 ---
-def _profile(plane: str, offset: float, kind: str, p: dict) -> cq.Workplane:
-    wp = cq.Workplane(plane, origin=_origin(plane, offset))
+def _profile(plane, offset: float, kind: str, p: dict) -> cq.Workplane:
+    if isinstance(plane, cq.Plane):             # 鎖定的工作平面
+        wp = cq.Workplane(plane)
+    else:
+        wp = cq.Workplane(plane, origin=_origin(plane, offset))
     cx, cy = p.get("cx", 0), p.get("cy", 0)  # 輪廓中心偏移(旋轉時需離開旋轉軸)
     if cx or cy:
         wp = wp.pushPoints([(cx, cy)])
@@ -155,3 +158,35 @@ def scale(shape: cq.Shape, sx, sy, sz, about_center=True) -> cq.Shape:
     else:
         res = moved.transformGeometry(cq.Matrix([[sx, 0, 0, 0], [0, sy, 0, 0], [0, 0, sz, 0]]))
     return res.moved(cq.Location(cq.Vector(c.x, c.y, c.z)))
+
+
+# --- 工作平面(鎖定平面):wp = {"origin": [...], "xdir": [...], "normal": [...]} ---
+def plane_from_dict(wp: dict) -> cq.Plane:
+    return cq.Plane(origin=tuple(wp["origin"]), xDir=tuple(wp["xdir"]), normal=tuple(wp["normal"]))
+
+
+def plane_from_face(face: cq.Face) -> dict:
+    """由平面的面取得工作平面(法向朝實體外側);非平面則丟出錯誤。"""
+    if face.geomType() != "PLANE":
+        raise ValueError("只能鎖定平面(所選的面不是平面)")
+    o, n = face.Center(), face.normalAt()
+    pl = cq.Plane(origin=(o.x, o.y, o.z), normal=(n.x, n.y, n.z))
+    r = lambda v: [round(v.x, 6) + 0.0, round(v.y, 6) + 0.0, round(v.z, 6) + 0.0]  # noqa: E731
+    return {"origin": r(pl.origin), "xdir": r(pl.xDir), "normal": r(pl.zDir)}
+
+
+WORLD_PLANES = {
+    "XY": {"origin": [0, 0, 0], "xdir": [1, 0, 0], "normal": [0, 0, 1]},
+    "XZ": {"origin": [0, 0, 0], "xdir": [1, 0, 0], "normal": [0, -1, 0]},
+    "YZ": {"origin": [0, 0, 0], "xdir": [0, 1, 0], "normal": [1, 0, 0]},
+}
+
+
+def to_plane(shape: cq.Shape, wp: dict, flip: bool = False, ground: bool = False) -> cq.Shape:
+    """把以原點、+Z 向上建立的形狀放到工作平面上。
+    ground=True 時先讓形狀底面貼齊平面;flip=True 時朝法向反方向(例如往實體內)。"""
+    if ground:
+        shape = shape.moved(cq.Location(cq.Vector(0, 0, -shape.BoundingBox().zmin)))
+    if flip:
+        shape = shape.rotate(cq.Vector(0, 0, 0), cq.Vector(1, 0, 0), 180)
+    return shape.transformShape(plane_from_dict(wp).rG)

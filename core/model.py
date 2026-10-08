@@ -6,7 +6,8 @@ from dataclasses import dataclass, field
 import cadquery as cq
 
 from .io_step import export_step, shapes_to_step_text
-from .ops import CREATORS, MODIFIERS, LABELS
+from . import features as F
+from .ops import CREATORS, MODIFIERS, LABELS, PLACEABLE
 
 FORMAT_VERSION = 1
 
@@ -60,6 +61,8 @@ class Document:
         p, k = feat.params, feat.kind
         if k in CREATORS:
             shapes = CREATORS[k](p)
+            if p.get("wp") and k in PLACEABLE:
+                shapes = [F.to_plane(x, p["wp"], p.get("flip", False), PLACEABLE[k]) for x in shapes]
             if not feat.out_ids:
                 feat.out_ids = [self._alloc() for _ in shapes]
             names = p.get("names") or [f"{feat.label}{i}" for i in feat.out_ids]

@@ -16,9 +16,13 @@ LABELS = {
 
 def _sketch(p):
     kind = p["kind"]
+    if p.get("wp"):                      # 鎖定平面時直接用該平面
+        plane, offset = F.plane_from_dict(p["wp"]), 0
+    else:
+        plane, offset = F.PLANES[p["plane"]], p["offset"]
     pts = F.parse_points(p.get("pts", "")) if kind == "自訂多邊形" else []
     params = dict(w=p["w"], h=p["h"], r=p["r"], n=p["n"], cx=p["cx"], cy=p["cy"], pts=pts)
-    return F.PLANES[p["plane"]], p["offset"], kind, params
+    return plane, offset, kind, params
 
 
 def _thread_dp(p):
@@ -32,7 +36,8 @@ def _rod(p):
 
 def _extrude(p):
     plane, off, kind, params = _sketch(p)
-    return [F.sketch_extrude(plane, off, kind, params, p["depth"], p["sym"])]
+    depth = -p["depth"] if p.get("flip") else p["depth"]
+    return [F.sketch_extrude(plane, off, kind, params, depth, p["sym"])]
 
 
 def _revolve(p):
@@ -54,6 +59,20 @@ CREATORS = {
     "step": lambda p: step_text_to_shapes(p["data"]),
 }
 
+# 鎖定平面時可放置的建立類特徵 -> 是否讓底面貼齊平面
+PLACEABLE = {"box": True, "cylinder": True, "sphere": True, "cone": True, "torus": True,
+             "rod": False, "thread_tool": False}
+
+
+def _hole(p, s):
+    d, pitch = _thread_dp(p)
+    if p.get("wp"):                      # 預設由平面往實體內(法向反方向)切入
+        tool = F.to_plane(T.make_threaded_rod(d, pitch, p["depth"], p["left"]), p["wp"],
+                          flip=not p.get("flip", False))
+        return T.cut_tool(s, tool)
+    return T.threaded_hole(s, d, pitch, p["depth"], (p["x"], p["y"], p["z"]), p["axis"], p["left"])
+
+
 # kind -> fn(params, shape) -> shape  (修改既有實體,params["body"] 為實體編號)
 MODIFIERS = {
     "translate": lambda p, s: F.translate(s, p["x"], p["y"], p["z"]),
@@ -62,6 +81,5 @@ MODIFIERS = {
     "rotate": lambda p, s: F.rotate(s, p["x"], p["y"], p["z"], p["c"]),
     "fillet": lambda p, s: F.fillet(s, set(p["edges"]), p["r"]),
     "chamfer": lambda p, s: F.chamfer(s, set(p["edges"]), p["d"], p.get("d2") or None),
-    "thread_hole": lambda p, s: T.threaded_hole(
-        s, *_thread_dp(p), p["depth"], (p["x"], p["y"], p["z"]), p["axis"], p["left"]),
+    "thread_hole": _hole,
 }

@@ -38,6 +38,7 @@ class Scene:
         self._doc = None
         self._meshes, self._edge_idx, self._edge_polys = [], [], []
         self._press = None
+        self.locked = None  # 鎖定的工作平面 dict(origin/xdir/normal)
         it = self.plotter.iren.interactor
         self._tag_press = it.AddObserver("LeftButtonPressEvent", self._on_press, 10.0)
         it.AddObserver("LeftButtonReleaseEvent", self._on_release, 10.0)
@@ -77,6 +78,7 @@ class Scene:
                     edges, color="black",
                     line_width=1.5, name=f"edge{i}",
                 )
+        self._draw_lock(render=False)
         if reset_camera:
             self.set_view("等角視")
 
@@ -199,3 +201,24 @@ class Scene:
                 sub = m.extract_cells([i for i, f in enumerate(ids) if f in self.sel_faces])
                 self.plotter.add_mesh(sub, color="orange", name="sel_faces", pickable=False)
         self.plotter.render()
+
+    # --- 鎖定平面 ---
+    def set_lock(self, wp) -> None:
+        self.locked = wp
+        self._draw_lock()
+
+    def _draw_lock(self, render: bool = True) -> None:
+        self.plotter.remove_actor("lock_plane", render=False)
+        self.plotter.remove_actor("lock_normal", render=False)
+        if self.locked:
+            import pyvista as pv
+            origin, normal = np.array(self.locked["origin"]), np.array(self.locked["normal"])
+            sizes = [np.linalg.norm(np.array(m.bounds[1::2]) - np.array(m.bounds[0::2]))
+                     for m in self._meshes if m.n_cells]
+            size = max(sizes, default=40.0) * 0.6
+            self.plotter.add_mesh(pv.Plane(center=origin, direction=normal, i_size=size, j_size=size),
+                                  color="cyan", opacity=0.25, name="lock_plane", pickable=False)
+            self.plotter.add_mesh(pv.Arrow(start=origin, direction=normal, scale=size * 0.25),
+                                  color="cyan", name="lock_normal", pickable=False)
+        if render:
+            self.plotter.render()

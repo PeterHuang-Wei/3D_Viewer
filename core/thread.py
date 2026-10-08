@@ -64,7 +64,10 @@ def place(shape: cq.Shape, pos, axis: str) -> cq.Shape:
 def threaded_hole(body: cq.Shape, diameter, pitch, depth, pos, axis="Z",
                   left_hand=False) -> cq.Shape:
     """在實體上由 pos 沿軸向切出內螺紋孔(螺桿工具體差集)。"""
-    tool = place(make_threaded_rod(diameter, pitch, depth, left_hand), pos, axis)
+    return cut_tool(body, place(make_threaded_rod(diameter, pitch, depth, left_hand), pos, axis))
+
+
+def cut_tool(body: cq.Shape, tool: cq.Shape) -> cq.Shape:
     res = body.cut(tool).clean()
     if abs(res.Volume() - body.Volume()) < 1e-6:
         raise ValueError("螺紋孔未與實體相交,請確認位置與方向")
