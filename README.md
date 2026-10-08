@@ -8,7 +8,7 @@
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-python main.py [檔案.step]
+python main.py [專案.v3d 或 檔案.step]
 ```
 
 ## 進度
@@ -17,7 +17,7 @@ python main.py [檔案.step]
 - [x] 第二階段:基本實體、草圖拉伸、平移旋轉、布林運算
 - [x] 第三階段:面/邊選取、倒角、圓角
 - [x] 第四階段:螺牙(外/內)
-- [ ] 第五階段:特徵樹、參數重算、復原/重做、專案檔
+- [x] 第五階段:特徵樹、參數重算、復原/重做、專案檔
 
 ## 測試
 
@@ -25,3 +25,9 @@ python main.py [檔案.step]
 pip install pytest
 python -m pytest tests
 ```
+
+## 使用重點
+
+- 所有建模操作都記錄在「特徵歷史」;雙擊特徵可改參數,後續特徵自動重算。
+- 專案存成 `.v3d`(JSON,匯入的 STEP 內嵌於檔內);另可匯入/匯出 STEP/STP。
+- `Ctrl+Z` / `Ctrl+Y` 復原與重做;重算失敗的特徵會標示 ⚠ 並略過。

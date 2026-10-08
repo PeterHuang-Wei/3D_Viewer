@@ -1,17 +1,21 @@
 """主視窗(繁體中文介面)。"""
 import os
 
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
-    QMainWindow, QAction, QActionGroup, QFileDialog, QMessageBox, QListWidget, QDockWidget,
+    QMainWindow, QAction, QActionGroup, QFileDialog, QMessageBox, QListWidget,
+    QDockWidget,
 )
 
 from core import features as F
-from core import thread as T
 from core.model import Document
-from .dialogs import ask
 from viewer.scene import Scene, VIEWS
+from .dialogs import ask
+from .schemas import SCHEMAS
 
 STEP_FILTER = "STEP 檔案 (*.step *.stp *.STEP *.STP)"
+PROJ_FILTER = "3D Viewer 專案 (*.v3d)"
+APP = "3D Viewer"
 
 
 class MainWindow(QMainWindow):
@@ -20,17 +24,21 @@ class MainWindow(QMainWindow):
         self.doc = Document()
         self.scene = Scene(self)
         self.setCentralWidget(self.scene.widget)
-        self.resize(1280, 800)
+        self.resize(1360, 820)
 
-        self.tree = QListWidget()
-        dock = QDockWidget("特徵樹", self)
-        dock.setWidget(self.tree)
-        self.addDockWidget(0x1, dock)  # 左側
+        self.tree = QListWidget()                       # 目前實體
+        self.history = QListWidget()                    # 特徵歷史
+        self.history.itemDoubleClicked.connect(lambda _: self.on_edit_feature())
+        for title, widget in (("實體", self.tree), ("特徵歷史(雙擊編輯參數)", self.history)):
+            dock = QDockWidget(title, self)
+            dock.setWidget(widget)
+            self.addDockWidget(Qt.LeftDockWidgetArea, dock)
 
         self.scene.on_selection = self._show_selection
         self._build_menus()
         self._update()
 
+    # --- 選單 ---
     def _action(self, text, slot, shortcut=None, checkable=False, checked=False):
         act = QAction(text, self)
         act.triggered.connect(slot)
@@ -45,26 +53,36 @@ class MainWindow(QMainWindow):
         bar = self.menuBar()
         m = bar.addMenu("檔案(&F)")
         m.addAction(self._action("新建", self.on_new, "Ctrl+N"))
-        m.addAction(self._action("開啟 STEP...", self.on_open, "Ctrl+O"))
-        m.addAction(self._action("儲存", self.on_save, "Ctrl+S"))
-        m.addAction(self._action("另存為 STEP...", self.on_save_as, "Ctrl+Shift+S"))
+        m.addAction(self._action("開啟專案...", self.on_open, "Ctrl+O"))
+        m.addAction(self._action("儲存專案", self.on_save, "Ctrl+S"))
+        m.addAction(self._action("另存專案...", self.on_save_as, "Ctrl+Shift+S"))
+        m.addSeparator()
+        m.addAction(self._action("匯入 STEP...", self.on_import_step))
+        m.addAction(self._action("匯出 STEP...", self.on_export_step))
         m.addSeparator()
         m.addAction(self._action("結束", self.close, "Ctrl+Q"))
 
+        e = bar.addMenu("編輯(&E)")
+        self.act_undo = self._action("復原", self.on_undo, "Ctrl+Z")
+        self.act_redo = self._action("重做", self.on_redo, "Ctrl+Y")
+        e.addAction(self.act_undo)
+        e.addAction(self.act_redo)
+        e.addSeparator()
+        e.addAction(self._action("編輯所選特徵參數...", self.on_edit_feature, "F2"))
+        e.addAction(self._action("刪除所選特徵", self.on_delete_feature))
+
         c = bar.addMenu("建立(&C)")
-        for text, slot in (("方塊...", self.on_box), ("圓柱...", self.on_cylinder),
-                           ("球...", self.on_sphere), ("圓錐...", self.on_cone),
-                           ("環...", self.on_torus)):
-            c.addAction(self._action(text, slot))
+        for kind in ("box", "cylinder", "sphere", "cone", "torus"):
+            c.addAction(self._action(SCHEMAS[kind][0] + "...", lambda _, k=kind: self.on_create(k)))
         c.addSeparator()
-        c.addAction(self._action("草圖拉伸...", self.on_extrude))
-        c.addAction(self._action("草圖旋轉...", self.on_revolve))
+        c.addAction(self._action("草圖拉伸...", lambda _=None: self.on_create("extrude")))
+        c.addAction(self._action("草圖旋轉...", lambda _=None: self.on_create("revolve")))
 
         t = bar.addMenu("變換(&T)")
-        t.addAction(self._action("平移...", self.on_translate))
-        t.addAction(self._action("旋轉...", self.on_rotate))
+        t.addAction(self._action("平移...", lambda: self.on_modify("translate")))
+        t.addAction(self._action("旋轉...", lambda: self.on_modify("rotate")))
         t.addSeparator()
-        t.addAction(self._action("刪除", self.on_delete, "Del"))
+        t.addAction(self._action("刪除實體", self.on_delete_body, "Del"))
 
         m2 = bar.addMenu("修飾(&M)")
         grp = QActionGroup(self)
@@ -75,13 +93,13 @@ class MainWindow(QMainWindow):
             m2.addAction(act)
         m2.addAction(self._action("清除選取", self.scene.clear_selection, "Esc"))
         m2.addSeparator()
-        m2.addAction(self._action("圓角...", self.on_fillet))
-        m2.addAction(self._action("倒角...", self.on_chamfer))
+        m2.addAction(self._action("圓角...", lambda: self.on_edge_feature("fillet")))
+        m2.addAction(self._action("倒角...", lambda: self.on_edge_feature("chamfer")))
 
         th = bar.addMenu("螺牙(&H)")
-        th.addAction(self._action("外螺紋螺桿...", self.on_thread_rod))
-        th.addAction(self._action("內螺紋切削工具體...", self.on_thread_tool))
-        th.addAction(self._action("在實體上開螺紋孔...", self.on_thread_hole))
+        th.addAction(self._action("外螺紋螺桿...", lambda: self.on_create("rod")))
+        th.addAction(self._action("內螺紋切削工具體...", lambda: self.on_create("thread_tool")))
+        th.addAction(self._action("在實體上開螺紋孔...", lambda: self.on_modify("thread_hole")))
 
         b = bar.addMenu("布林運算(&B)")
         for op in ("聯集", "差集", "交集"):
@@ -95,21 +113,42 @@ class MainWindow(QMainWindow):
         v.addAction(self._action("顯示邊線", self.on_edges, checkable=True, checked=True))
 
     # --- 檔案 ---
+    def _confirm_discard(self) -> bool:
+        if not self.doc.dirty:
+            return True
+        r = QMessageBox.question(self, APP, "目前專案尚未儲存,確定要放棄變更嗎?")
+        return r == QMessageBox.Yes
+
+    def closeEvent(self, ev):
+        ev.accept() if self._confirm_discard() else ev.ignore()
+
     def on_new(self):
-        self.doc.clear()
-        self._update()
+        if self._confirm_discard():
+            self.doc.clear()
+            self._update()
 
     def on_open(self):
-        path, _ = QFileDialog.getOpenFileName(self, "開啟 STEP", "", STEP_FILTER)
+        if not self._confirm_discard():
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "開啟專案", "", PROJ_FILTER)
         if path:
             self.load(path)
 
     def load(self, path):
+        """開啟 .v3d 專案;若為 STEP 則匯入到新專案。"""
         try:
-            self.doc.open_step(path)
-        except Exception as e:
+            if path.lower().endswith((".step", ".stp")):
+                self.doc.clear()
+                err = self.doc.import_step(path)
+                if err:
+                    raise ValueError(err)
+                self.doc.dirty = True
+            else:
+                self.doc.load_project(path)
+        except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "開啟失敗", str(e))
             return
+        self._report_errors()
         self._update()
 
     def on_save(self):
@@ -119,154 +158,130 @@ class MainWindow(QMainWindow):
             self.on_save_as()
 
     def on_save_as(self):
-        path, _ = QFileDialog.getSaveFileName(self, "另存為 STEP", "", STEP_FILTER)
+        path, _ = QFileDialog.getSaveFileName(self, "另存專案", "", PROJ_FILTER)
         if path:
-            if not path.lower().endswith((".step", ".stp")):
-                path += ".step"
-            self._save(path)
+            self._save(path if path.lower().endswith(".v3d") else path + ".v3d")
 
     def _save(self, path):
         try:
-            self.doc.save_step(path)
-        except Exception as e:
+            self.doc.save_project(path)
+        except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "儲存失敗", str(e))
             return
         self._update(reset_camera=False)
 
-    # --- 建立 ---
-    def _add(self, fn, name):
-        """執行建模函式並加入文件;失敗時顯示訊息。"""
-        try:
-            self.doc.add(fn(), name)
-        except Exception as e:
-            QMessageBox.critical(self, "操作失敗", str(e))
+    def on_import_step(self):
+        path, _ = QFileDialog.getOpenFileName(self, "匯入 STEP", "", STEP_FILTER)
+        if path:
+            self._run(lambda: self.doc.import_step(path))
+
+    def on_export_step(self):
+        path, _ = QFileDialog.getSaveFileName(self, "匯出 STEP", "", STEP_FILTER)
+        if not path:
             return
-        self._update()
-
-    def _num(self, title, fields):
-        return ask(title, [(k, l, "num", d) for k, l, d in fields], self)
-
-    def on_box(self):
-        v = self._num("方塊", [("x", "長 X", 20), ("y", "寬 Y", 20), ("z", "高 Z", 20)])
-        if v:
-            self._add(lambda: F.make_box(v["x"], v["y"], v["z"]), "方塊")
-
-    def on_cylinder(self):
-        v = self._num("圓柱", [("r", "半徑", 10), ("h", "高度", 20)])
-        if v:
-            self._add(lambda: F.make_cylinder(v["r"], v["h"]), "圓柱")
-
-    def on_sphere(self):
-        v = self._num("球", [("r", "半徑", 10)])
-        if v:
-            self._add(lambda: F.make_sphere(v["r"]), "球")
-
-    def on_cone(self):
-        v = self._num("圓錐", [("r1", "底半徑", 10), ("r2", "頂半徑", 0), ("h", "高度", 20)])
-        if v:
-            self._add(lambda: F.make_cone(v["r1"], v["r2"], v["h"]), "圓錐")
-
-    def on_torus(self):
-        v = self._num("環", [("R", "大半徑", 15), ("r", "小半徑", 3)])
-        if v:
-            self._add(lambda: F.make_torus(v["R"], v["r"]), "環")
-
-    def _sketch_dialog(self, title, extra):
-        fields = [
-            ("plane", "草圖平面", "combo", list(F.PLANES)),
-            ("offset", "平面偏移", "num", 0),
-            ("kind", "輪廓", "combo", ["矩形", "圓", "正多邊形", "自訂多邊形"]),
-            ("w", "矩形寬", "num", 20), ("h", "矩形高", "num", 10),
-            ("r", "圓/多邊形半徑", "num", 10), ("n", "多邊形邊數", "num", 6),
-            ("pts", "自訂點(x,y; x,y; ...)", "text", "0,0; 20,0; 10,15"),
-            ("cx", "輪廓中心偏移 X", "num", 0), ("cy", "輪廓中心偏移 Y", "num", 0),
-        ] + extra
-        v = ask(title, fields, self)
-        if not v:
-            return None
+        if not path.lower().endswith((".step", ".stp")):
+            path += ".step"
         try:
-            params = dict(w=v["w"], h=v["h"], r=v["r"], n=v["n"], cx=v["cx"], cy=v["cy"],
-                          pts=F.parse_points(v["pts"]) if v["kind"] == "自訂多邊形" else [])
-        except ValueError:
-            QMessageBox.critical(self, "輸入錯誤", "自訂點格式應為 x,y; x,y; ...")
-            return None
-        return F.PLANES[v["plane"]], v["offset"], v["kind"], params, v
+            self.doc.export_step(path)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "匯出失敗", str(e))
+            return
+        self.statusBar().showMessage(f"已匯出 {os.path.basename(path)}")
 
-    def on_extrude(self):
-        r = self._sketch_dialog("草圖拉伸", [
-            ("depth", "拉伸距離", "num", 10), ("sym", "雙向對稱", "bool", False)])
-        if r:
-            plane, off, kind, params, v = r
-            self._add(lambda: F.sketch_extrude(plane, off, kind, params, v["depth"], v["sym"]),
-                      "拉伸體")
+    # --- 編輯 / 歷史 ---
+    def _run(self, fn):
+        """執行會改變文件的操作;fn 回傳錯誤訊息或 None。"""
+        try:
+            err = fn()
+        except Exception as e:  # noqa: BLE001
+            err = str(e)
+        if err:
+            QMessageBox.critical(self, "操作失敗", err)
+            return False
+        self._update(reset_camera=False)
+        return True
 
-    def on_revolve(self):
-        r = self._sketch_dialog("草圖旋轉(繞草圖局部 Y 軸)", [("angle", "旋轉角度", "num", 360)])
-        if r:
-            plane, off, kind, params, v = r
-            self._add(lambda: F.sketch_revolve(plane, off, kind, params, v["angle"]), "旋轉體")
+    def on_undo(self):
+        self.doc.undo()
+        self._update(reset_camera=False)
 
-    # --- 變換 / 布林 ---
-    def _current(self):
+    def on_redo(self):
+        self.doc.redo()
+        self._update(reset_camera=False)
+
+    def _report_errors(self):
+        bad = [f"{f.label}: {f.error}" for f in self.doc.features if f.error]
+        if bad:
+            QMessageBox.warning(self, "部分特徵重算失敗", "\n".join(bad))
+
+    def on_edit_feature(self):
+        k = self.history.currentRow()
+        if k < 0:
+            QMessageBox.information(self, "提示", "請先在特徵歷史選取一個特徵")
+            return
+        feat = self.doc.features[k]
+        if feat.kind not in SCHEMAS:
+            QMessageBox.information(self, "提示", f"「{feat.label}」沒有可編輯的參數")
+            return
+        title, fields = SCHEMAS[feat.kind]
+        v = ask("編輯:" + title, fields, self, initial=feat.params)
+        if v and self._run(lambda: self.doc.edit_feature(k, v)):
+            self.history.setCurrentRow(k)
+
+    def on_delete_feature(self):
+        k = self.history.currentRow()
+        if k < 0:
+            QMessageBox.information(self, "提示", "請先在特徵歷史選取一個特徵")
+            return
+        self.doc.delete_feature(k)
+        self._update(reset_camera=False)
+        self._report_errors()
+
+    # --- 建立 / 修改 ---
+    def on_create(self, kind):
+        title, fields = SCHEMAS[kind]
+        v = ask(title, fields, self)
+        if v:
+            self._run(lambda: self.doc.add_feature(kind, v))
+            self.scene.set_view("等角視") if len(self.doc.bodies) == 1 else None
+
+    def _current_id(self):
         i = self.tree.currentRow()
         if i < 0 or i >= len(self.doc.bodies):
-            QMessageBox.information(self, "提示", "請先在左側特徵樹選取一個實體")
+            QMessageBox.information(self, "提示", "請先在左側「實體」清單選取一個實體")
             return None
-        return i
+        return self.doc.bodies[i].id
 
-    def _apply(self, i, fn):
-        try:
-            self.doc.bodies[i].shape = fn(self.doc.bodies[i].shape)
-        except Exception as e:
-            QMessageBox.critical(self, "操作失敗", str(e))
+    def on_modify(self, kind):
+        bid = self._current_id()
+        if bid is None:
             return
-        self._update(reset_camera=False)
-        self.tree.setCurrentRow(i)
-
-    def on_translate(self):
-        i = self._current()
-        v = i is not None and self._num("平移", [("x", "ΔX", 0), ("y", "ΔY", 0), ("z", "ΔZ", 0)])
+        title, fields = SCHEMAS[kind]
+        v = ask(title, fields, self)
         if v:
-            self._apply(i, lambda s: F.translate(s, v["x"], v["y"], v["z"]))
+            self._run(lambda: self.doc.add_feature(kind, {**v, "body": bid}))
 
-    def on_rotate(self):
-        i = self._current()
-        v = i is not None and ask("旋轉(度)", [
-            ("x", "繞 X", "num", 0), ("y", "繞 Y", "num", 0), ("z", "繞 Z", "num", 0),
-            ("c", "繞物件中心(否則繞原點)", "bool", True)], self)
-        if v:
-            self._apply(i, lambda s: F.rotate(s, v["x"], v["y"], v["z"], v["c"]))
-
-    def on_delete(self):
-        i = self._current()
-        if i is not None:
-            del self.doc.bodies[i]
-            self._update(reset_camera=False)
+    def on_delete_body(self):
+        bid = self._current_id()
+        if bid is not None:
+            self._run(lambda: self.doc.add_feature("delete", {"body": bid}))
 
     def on_boolean(self, op):
-        names = [b.name for b in self.doc.bodies]
-        if len(names) < 2:
+        bodies = self.doc.bodies
+        if len(bodies) < 2:
             QMessageBox.information(self, "提示", "至少需要兩個實體才能進行布林運算")
             return
-        v = ask(f"布林{op}", [
-            ("a", "目標實體", "combo", [f"{i}: {n}" for i, n in enumerate(names)]),
-            ("b", "工具實體", "combo", [f"{i}: {n}" for i, n in enumerate(names)]),
-            ("keep", "保留原工具實體", "bool", False)], self)
+        items = [f"{b.id}: {b.name}" for b in bodies]
+        v = ask(f"布林{op}", [("a", "目標實體", "combo", items), ("b", "工具實體", "combo", items),
+                              ("keep", "保留原工具實體", "bool", False)], self)
         if not v:
             return
         a, b = int(v["a"].split(":")[0]), int(v["b"].split(":")[0])
         if a == b:
             QMessageBox.warning(self, "提示", "目標與工具不可為同一實體")
             return
-        try:
-            res = F.boolean(op, self.doc.bodies[a].shape, self.doc.bodies[b].shape)
-        except Exception as e:
-            QMessageBox.critical(self, "布林運算失敗", str(e))
-            return
-        self.doc.bodies[a].shape = res
-        if not v["keep"]:
-            del self.doc.bodies[b]
-        self._update(reset_camera=False)
+        self._run(lambda: self.doc.add_feature(
+            "boolean", {"op": op, "target": a, "tool": b, "keep": v["keep"]}))
 
     # --- 選取 / 倒角 / 圓角 ---
     def on_mode(self, mode):
@@ -279,59 +294,17 @@ class MainWindow(QMainWindow):
         s = self.scene
         self.statusBar().showMessage(f"已選取 {len(s.sel_edges)} 條邊、{len(s.sel_faces)} 個面")
 
-    def _selected_edge_ids(self):
+    def on_edge_feature(self, kind):
         s = self.scene
         if s.sel_body is None or not (s.sel_edges or s.sel_faces):
             QMessageBox.information(self, "提示", "請先用「選取模式」在 3D 視窗選取邊或面")
-            return None, None
-        shape = self.doc.bodies[s.sel_body].shape
-        return s.sel_body, set(s.sel_edges) | F.face_edge_ids(shape, s.sel_faces)
-
-    def on_fillet(self):
-        i, ids = self._selected_edge_ids()
-        v = ids and self._num("圓角", [("r", "半徑", 2)])
-        if v:
-            self._apply(i, lambda s: F.fillet(s, ids, v["r"]))
-
-    def on_chamfer(self):
-        i, ids = self._selected_edge_ids()
-        v = ids and ask("倒角", [("d", "距離 1", "num", 2), ("d2", "距離 2(0 = 同距離 1)", "num", 0)], self)
-        if v:
-            self._apply(i, lambda s: F.chamfer(s, ids, v["d"], v["d2"] or None))
-
-    # --- 螺牙 ---
-    def _thread_fields(self):
-        return [("spec", "規格", "combo", T.spec_list()),
-                ("d", "自訂:公稱直徑", "num", 10), ("p", "自訂:螺距", "num", 1.5),
-                ("left", "左旋", "bool", False)]
-
-    @staticmethod
-    def _thread_dp(v):
-        return (v["d"], v["p"]) if v["spec"] == T.CUSTOM else T.parse_spec(v["spec"])
-
-    def on_thread_rod(self):
-        v = ask("外螺紋螺桿(沿 Z 軸)", self._thread_fields() + [("len", "長度", "num", 20)], self)
-        if v:
-            d, p = self._thread_dp(v)
-            self._add(lambda: T.make_threaded_rod(d, p, v["len"], v["left"]), f"螺桿 M{d:g}")
-
-    def on_thread_tool(self):
-        v = ask("內螺紋切削工具體", self._thread_fields() + [("len", "長度", "num", 20)], self)
-        if v:
-            d, p = self._thread_dp(v)
-            self._add(lambda: T.make_threaded_rod(d, p, v["len"], v["left"]), f"螺紋工具 M{d:g}")
-
-    def on_thread_hole(self):
-        i = self._current()
-        if i is None:
             return
-        v = ask("螺紋孔(由起點沿軸向切入)", self._thread_fields() + [
-            ("depth", "孔深", "num", 10), ("axis", "孔軸向", "combo", ["Z", "X", "Y"]),
-            ("x", "起點 X", "num", 0), ("y", "起點 Y", "num", 0), ("z", "起點 Z", "num", 0)], self)
+        body = self.doc.bodies[s.sel_body]
+        edges = sorted(set(s.sel_edges) | F.face_edge_ids(body.shape, s.sel_faces))
+        title, fields = SCHEMAS[kind]
+        v = ask(title, fields, self)
         if v:
-            d, p = self._thread_dp(v)
-            self._apply(i, lambda s: T.threaded_hole(
-                s, d, p, v["depth"], (v["x"], v["y"], v["z"]), v["axis"], v["left"]))
+            self._run(lambda: self.doc.add_feature(kind, {**v, "body": body.id, "edges": edges}))
 
     # --- 檢視 ---
     def on_wireframe(self, on):
@@ -343,9 +316,14 @@ class MainWindow(QMainWindow):
         self.scene.refresh(self.doc, reset_camera=False)
 
     def _update(self, reset_camera=True):
-        self.scene.refresh(self.doc, reset_camera)
+        self.scene.refresh(self.doc, reset_camera and bool(self.doc.bodies))
         self.tree.clear()
-        self.tree.addItems([b.name for b in self.doc.bodies])
+        self.tree.addItems([f"{b.id}: {b.name}" for b in self.doc.bodies])
+        self.history.clear()
+        for k, f in enumerate(self.doc.features):
+            self.history.addItem(f"{k + 1}. {f.label}" + (f"  ⚠ {f.error}" if f.error else ""))
+        self.act_undo.setEnabled(self.doc.can_undo())
+        self.act_redo.setEnabled(self.doc.can_redo())
         name = os.path.basename(self.doc.path) if self.doc.path else "未命名"
-        self.setWindowTitle(f"3D Viewer - {name}")
-        self.statusBar().showMessage(f"共 {len(self.doc.bodies)} 個實體")
+        self.setWindowTitle(f"{APP} - {name}{' *' if self.doc.dirty else ''}")
+        self.statusBar().showMessage(f"共 {len(self.doc.bodies)} 個實體、{len(self.doc.features)} 個特徵")

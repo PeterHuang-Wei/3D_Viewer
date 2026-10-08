@@ -36,6 +36,20 @@ class ParamDialog(QDialog):
         box.rejected.connect(self.reject)
         form.addRow(box)
 
+    def set_values(self, initial):
+        for key, val in initial.items():
+            if key not in self._w:
+                continue
+            kind, w = self._w[key]
+            if kind == "num":
+                w.setValue(val)
+            elif kind == "combo":
+                w.setCurrentText(val)
+            elif kind == "bool":
+                w.setChecked(val)
+            else:
+                w.setText(val)
+
     def values(self):
         out = {}
         for key, (kind, w) in self._w.items():
@@ -44,7 +58,9 @@ class ParamDialog(QDialog):
         return out
 
 
-def ask(title, fields, parent=None):
-    """顯示對話框,按取消回傳 None。"""
+def ask(title, fields, parent=None, initial=None):
+    """顯示對話框,按取消回傳 None。initial 為各欄位初始值。"""
     dlg = ParamDialog(title, fields, parent)
+    if initial:
+        dlg.set_values(initial)
     return dlg.values() if dlg.exec_() == QDialog.Accepted else None
