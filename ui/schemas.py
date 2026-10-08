@@ -32,6 +32,10 @@ SCHEMAS = {
     "rod": ("外螺紋螺桿(沿 Z 軸)", THREAD + [("len", "長度", "num", 20)]),
     "thread_tool": ("內螺紋切削工具體", THREAD + [("len", "長度", "num", 20)]),
     "translate": ("平移", XYZ("ΔX", "ΔY", "ΔZ")),
+    "scale": ("縮放", [("uniform", "等比例(只用 X 倍率)", "bool", True),
+                       ("sx", "X 倍率", "num", 1), ("sy", "Y 倍率", "num", 1),
+                       ("sz", "Z 倍率", "num", 1),
+                       ("c", "以物件中心為基準(否則以原點)", "bool", True)]),
     "rotate": ("旋轉(度)", XYZ("繞 X", "繞 Y", "繞 Z")
                + [("c", "繞物件中心(否則繞原點)", "bool", True)]),
     "fillet": ("圓角", [("r", "半徑", "num", 2)]),

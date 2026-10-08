@@ -1,11 +1,12 @@
 """3D 視窗:封裝 pyvistaqt 的 QtInteractor。"""
+import numpy as np
 from pyvistaqt import QtInteractor
 
 from core.model import Document
 import vtk
 
 from .mesh import shape_to_mesh, shape_to_edges
-from .picking import EdgeIndex, face_at, nearest_body
+from .picking import EdgeIndex, face_at, nearest_body, constrain_delta
 
 COLORS = ["#8fb8de", "#e0a96d", "#9bc59d", "#c9a0dc", "#d9777a"]
 
@@ -38,8 +39,15 @@ class Scene:
         self._meshes, self._edge_idx, self._edge_polys = [], [], []
         self._press = None
         it = self.plotter.iren.interactor
-        it.AddObserver("LeftButtonPressEvent", self._on_press, 10.0)
+        self._tag_press = it.AddObserver("LeftButtonPressEvent", self._on_press, 10.0)
         it.AddObserver("LeftButtonReleaseEvent", self._on_release, 10.0)
+        it.AddObserver("MouseMoveEvent", self._on_move, 10.0)
+        it.AddObserver("KeyPressEvent", lambda o, e: self._keys.add(o.GetKeySym().lower()), 10.0)
+        it.AddObserver("KeyReleaseEvent", lambda o, e: self._keys.discard(o.GetKeySym().lower()), 10.0)
+        # 移動模式:on_move(body_index, (dx, dy, dz)) 於放開滑鼠時回呼
+        self.on_move = None
+        self._keys: set[str] = set()
+        self._drag = None  # (body, 起點世界座標, 起點深度, 目前位移)
 
     @property
     def widget(self):
@@ -88,11 +96,61 @@ class Scene:
         if notify and self.on_selection:
             self.on_selection()
 
+    def _world_at(self, x, y, depth):
+        r = self.plotter.renderer
+        r.SetDisplayPoint(x, y, depth)
+        r.DisplayToWorld()
+        w = r.GetWorldPoint()
+        return np.array(w[:3]) / w[3]
+
     def _on_press(self, obj, _evt):
         self._press = obj.GetEventPosition()
+        if self.mode != "move":
+            return
+        x, y = self._press
+        picker = vtk.vtkCellPicker()
+        picker.SetTolerance(0.005)
+        if not picker.Pick(x, y, 0, self.plotter.renderer):
+            return
+        p = np.array(picker.GetPickPosition())
+        body = nearest_body(self._meshes, p)
+        if body is None:
+            return
+        r = self.plotter.renderer
+        r.SetWorldPoint(*p, 1.0)
+        r.WorldToDisplay()
+        self._drag = (body, p, r.GetDisplayPoint()[2], np.zeros(3))
+        obj.GetCommand(self._tag_press).SetAbortFlag(1)  # 不要同時旋轉視角
+
+    def _on_move(self, obj, _evt):
+        if self._drag is None:
+            return
+        body, p0, depth, _ = self._drag
+        x, y = obj.GetEventPosition()
+        delta = constrain_delta(self._world_at(x, y, depth) - p0, self._keys)
+        self._drag = (body, p0, depth, delta)
+        for name in (f"body{body}", f"edge{body}"):
+            actor = self.plotter.renderer.actors.get(name)
+            if actor is not None:
+                actor.SetPosition(*delta)
+        self.plotter.render()
+        obj.GetCommand(self._tag_press).SetAbortFlag(0)
+
+    def _finish_drag(self):
+        body, _, _, delta = self._drag
+        self._drag = None
+        if np.linalg.norm(delta) > 1e-6:
+            if self.on_move:
+                self.on_move(body, tuple(round(float(v), 4) for v in delta))
+        else:
+            self.plotter.render()
 
     def _on_release(self, obj, _evt):
-        if self.mode == "off" or self._press is None:
+        if self._drag is not None:
+            self._press = None
+            self._finish_drag()
+            return
+        if self.mode in ("off", "move") or self._press is None:
             return
         x, y = obj.GetEventPosition()
         px, py = self._press

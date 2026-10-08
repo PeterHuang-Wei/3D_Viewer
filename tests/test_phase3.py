@@ -41,3 +41,18 @@ def test_picking():
     fid = face_at(mesh, (0, 0, 5))
     assert abs(b.Faces()[fid].Center().z - 5) < 1e-6
     assert nearest_body([mesh, shape_to_mesh(F.translate(b, 100, 0, 0))], (99, 0, 0)) == 1
+
+
+def test_scale_and_constrain():
+    from viewer.picking import constrain_delta
+    b = F.make_box(2, 2, 2)
+    assert abs(F.scale(b, 2, 2, 2).Volume() - 64) < 1e-6
+    n = F.scale(b, 1, 2, 3)
+    assert abs(n.Volume() - 48) < 1e-6 and abs(n.Center().x) < 1e-9
+    t = F.translate(b, 10, 0, 0)
+    assert abs(F.scale(t, 2, 2, 2, about_center=True).Center().x - 10) < 1e-6
+    assert abs(F.scale(t, 2, 2, 2, about_center=False).Center().x - 20) < 1e-6
+    with pytest.raises(ValueError):
+        F.scale(b, 0, 1, 1)
+    assert list(constrain_delta((1, 2, 3), {"y"})) == [0, 2, 0]
+    assert list(constrain_delta((1, 2, 3), set())) == [1, 2, 3]

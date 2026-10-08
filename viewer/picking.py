@@ -51,3 +51,14 @@ def nearest_body(meshes, p) -> int | None:
         if d < best_d:
             best, best_d = i, d
     return best
+
+
+def constrain_delta(delta, keys) -> np.ndarray:
+    """依按住的 x/y/z 鍵把位移限制在軸向上;沒有按鍵則不限制。"""
+    d = np.asarray(delta, dtype=float)
+    axes = [i for i, k in enumerate("xyz") if k in keys]
+    if not axes:
+        return d
+    out = np.zeros(3)
+    out[axes] = d[axes]
+    return out

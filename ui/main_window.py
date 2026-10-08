@@ -35,6 +35,7 @@ class MainWindow(QMainWindow):
             self.addDockWidget(Qt.LeftDockWidgetArea, dock)
 
         self.scene.on_selection = self._show_selection
+        self.scene.on_move = self._on_drag_move
         self._build_menus()
         self._update()
 
@@ -81,12 +82,13 @@ class MainWindow(QMainWindow):
         t = bar.addMenu("變換(&T)")
         t.addAction(self._action("平移...", lambda: self.on_modify("translate")))
         t.addAction(self._action("旋轉...", lambda: self.on_modify("rotate")))
+        t.addAction(self._action("縮放...", lambda _=None: self.on_modify("scale")))
         t.addSeparator()
         t.addAction(self._action("刪除實體", self.on_delete_body, "Del"))
 
         m2 = bar.addMenu("修飾(&M)")
         grp = QActionGroup(self)
-        for text, mode in (("選取模式:關閉", "off"), ("選取模式:邊", "edge"), ("選取模式:面", "face")):
+        for text, mode in (("選取模式:關閉", "off"), ("移動模式:拖曳物件", "move"), ("選取模式:邊", "edge"), ("選取模式:面", "face")):
             act = self._action(text, lambda _, md=mode: self.on_mode(md), checkable=True,
                                checked=(mode == "off"))
             grp.addAction(act)
@@ -286,9 +288,18 @@ class MainWindow(QMainWindow):
     # --- 選取 / 倒角 / 圓角 ---
     def on_mode(self, mode):
         self.scene.set_mode(mode)
-        if mode != "off":
+        if mode == "move":
+            self.statusBar().showMessage("拖曳物件移動(沿視角平面);按住 X / Y / Z 鍵可限制軸向")
+        elif mode != "off":
             self.statusBar().showMessage("在 3D 視窗點選" + ("邊" if mode == "edge" else "面")
                                          + "(再點一次取消),完成後到「修飾」選單")
+
+    def _on_drag_move(self, index, delta):
+        dx, dy, dz = delta
+        bid = self.doc.bodies[index].id
+        if not self._run(lambda: self.doc.add_feature(
+                "translate", {"body": bid, "x": dx, "y": dy, "z": dz})):
+            self._update(reset_camera=False)
 
     def _show_selection(self):
         s = self.scene

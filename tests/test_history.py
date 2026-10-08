@@ -66,3 +66,12 @@ def test_thread_and_sketch_features():
     assert abs(vol(d) - 60) < 1e-6
     th = {"spec": "M6 粗牙 (P1.0)", "d": 6, "p": 1, "left": False, "len": 8}
     assert d.add_feature("rod", th) is None
+
+
+def test_scale_feature():
+    d, a, b = make()
+    p = {"uniform": True, "sx": 2, "sy": 1, "sz": 1, "c": True, "body": a}
+    assert d.add_feature("scale", p) is None
+    assert abs(vol(d) - 8000) < 1e-6
+    assert d.edit_feature(2, {"uniform": False, "sy": 3}) is None
+    assert abs(vol(d) - 10 * 10 * 10 * 2 * 3 * 1) < 1e-3

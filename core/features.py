@@ -141,3 +141,17 @@ def chamfer(shape: cq.Shape, edge_ids, length: float, length2: float | None = No
         raise
     except Exception as e:
         raise ValueError("倒角失敗,距離可能過大或邊不適用") from e
+
+
+# --- 縮放 ---
+def scale(shape: cq.Shape, sx, sy, sz, about_center=True) -> cq.Shape:
+    """各軸縮放。三軸相同時保持解析曲面;不等比縮放會把曲面轉成 B-spline。"""
+    if min(sx, sy, sz) <= 0:
+        raise ValueError("縮放倍率必須大於 0")
+    c = shape.Center() if about_center else cq.Vector(0, 0, 0)
+    moved = shape.moved(cq.Location(-c))
+    if sx == sy == sz:
+        res = moved.scale(sx)
+    else:
+        res = moved.transformGeometry(cq.Matrix([[sx, 0, 0, 0], [0, sy, 0, 0], [0, 0, sz, 0]]))
+    return res.moved(cq.Location(cq.Vector(c.x, c.y, c.z)))
