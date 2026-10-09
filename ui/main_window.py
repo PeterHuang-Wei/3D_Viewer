@@ -5,13 +5,15 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QMainWindow, QAction, QActionGroup, QFileDialog, QMessageBox, QListWidget,
     QDockWidget, QLabel, QToolBar, QLineEdit, QCheckBox, QDoubleSpinBox,
+    QInputDialog, QPushButton, QWidget, QVBoxLayout,
 )
 
 from core import features as F
+from core import sketch_solver as K
 from core.model import Document
 from core.ops import PLACEABLE
 from viewer.scene import Scene, VIEWS
-from viewer.sketch_editor import SketchEditor, TOOLS as SK_TOOLS
+from viewer.sketch_editor import SketchEditor, TOOLS as SK_TOOLS, CONSTRAINT_TOOLS
 from .dialogs import ask
 from .schemas import SCHEMAS
 
@@ -267,7 +269,8 @@ class MainWindow(QMainWindow):
         if feat.kind == "sketch":
             sk = next((x for i, _, x in self.doc.sketches if i in feat.out_ids), None)
             self._begin_sketch(sk["wp"] if sk else feat.params["wp"], feat.params["entities"], k,
-                               feat.out_ids[0] if feat.out_ids else None)
+                               feat.out_ids[0] if feat.out_ids else None,
+                               feat.params.get("constraints", []))
             return
         if feat.kind not in SCHEMAS:
             QMessageBox.information(self, "提示", f"「{feat.label}」沒有可編輯的參數")
@@ -510,12 +513,45 @@ class MainWindow(QMainWindow):
         bar.addAction(self._action("✔ 完成草圖", self.on_sk_finish))
         bar.addAction(self._action("✘ 取消", self.on_sk_cancel))
         bar.hide()
+        self.addToolBarBreak(Qt.TopToolBarArea)
+        bar2 = QToolBar("拘束與標註", self)
+        bar2.setMovable(False)
+        self.addToolBar(Qt.TopToolBarArea, bar2)
+        self.sk_bar2 = bar2
+        for tool, (label, ctype, _) in CONSTRAINT_TOOLS.items():
+            if tool == "d_size":
+                bar2.addSeparator()
+            act = QAction(label.replace("尺寸:", "▭ "), self)
+            act.setCheckable(True)
+            act.triggered.connect(lambda _, t=tool: self._sk and self._sk["ed"].set_tool(t))
+            grp.addAction(act)
+            bar2.addAction(act)
+            self.sk_tool_actions[tool] = act
+        bar2.addSeparator()
+        self.dof_label = QLabel("自由度: -")
+        bar2.addWidget(self.dof_label)
+        bar2.hide()
+        # 拘束清單(草圖模式才顯示)
+        box = QWidget()
+        lay = QVBoxLayout(box)
+        self.cons_list = QListWidget()
+        self.cons_list.currentRowChanged.connect(self._on_cons_selected)
+        self.cons_list.itemDoubleClicked.connect(lambda _: self.on_cons_edit())
+        lay.addWidget(self.cons_list)
+        for text, slot in (("編輯所選尺寸數值", self.on_cons_edit), ("刪除所選拘束/尺寸", self.on_cons_delete)):
+            b = QPushButton(text)
+            b.clicked.connect(slot)
+            lay.addWidget(b)
+        self.cons_dock = QDockWidget("拘束與尺寸", self)
+        self.cons_dock.setWidget(box)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.cons_dock)
+        self.cons_dock.hide()
 
     def on_new_sketch(self):
         if not self.wp:
             QMessageBox.information(self, "草圖", "請先鎖定平面:選取一個面或參考面後按 F3,或用「平面」選單鎖定 XY/XZ/YZ")
             return
-        self._begin_sketch(self.wp, [], None, None)
+        self._begin_sketch(self.wp, [], None, None, [])
 
     def on_edit_sketch(self):
         r = self.sketch_list.currentRow()
@@ -524,22 +560,28 @@ class MainWindow(QMainWindow):
             return
         sid, _, sk = self.doc.sketches[r]
         k = next(i for i, f in enumerate(self.doc.features) if f.kind == "sketch" and sid in f.out_ids)
-        self._begin_sketch(sk["wp"], sk["entities"], k, sid)
+        self._begin_sketch(sk["wp"], sk["entities"], k, sid, sk.get("constraints", []))
 
-    def _begin_sketch(self, wp, entities, edit_index, sid):
+    def _begin_sketch(self, wp, entities, edit_index, sid, constraints):
         if self._sk:
             return
-        ed = SketchEditor(self.scene, wp, entities, status=self.statusBar().showMessage)
+        ed = SketchEditor(self.scene, wp, entities, status=self.statusBar().showMessage,
+                          constraints=constraints)
+        ed.ask_value = self._ask_value
+        ed.on_change = self._sk_changed
         self._sk = {"ed": ed, "edit": edit_index, "wp": wp, "plane_id": self.wp_id, "sid": sid}
         self.scene.sketch = ed
         self.scene.hide_sketch = sid
         self.scene._draw_sketches()
         self.menuBar().setEnabled(False)
         self.sk_bar.show()
+        self.sk_bar2.show()
+        self.cons_dock.show()
         self.sk_tool_actions["line"].setChecked(True)
         ed.tool = "line"
         ed.grid, ed.grid_step = self.sk_grid.isChecked(), self.sk_step.value()
         ed.start()
+        self._sk_changed()
 
     def _end_sketch(self):
         if not self._sk:
@@ -548,6 +590,8 @@ class MainWindow(QMainWindow):
         self.scene.sketch, self.scene.hide_sketch = None, None
         self._sk = None
         self.sk_bar.hide()
+        self.sk_bar2.hide()
+        self.cons_dock.hide()
         self.menuBar().setEnabled(True)
         self._update(reset_camera=False)
         self.scene.set_view("等角視")
@@ -560,14 +604,63 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "草圖", "草圖是空的;要放棄請按「取消」")
             return
         if self._sk["edit"] is not None:
-            ok = self._run(lambda: self.doc.edit_feature(self._sk["edit"], {"entities": ents}))
+            ok = self._run(lambda: self.doc.edit_feature(
+                self._sk["edit"], {"entities": ents, "constraints": ed.constraints}))
         else:
-            params = {"entities": ents, "wp": self._sk["wp"]}
+            params = {"entities": ents, "wp": self._sk["wp"], "constraints": ed.constraints}
             if self._sk["plane_id"] is not None:
                 params["plane_id"] = self._sk["plane_id"]
             ok = self._run(lambda: self.doc.add_feature("sketch", params))
         if ok:
             self._end_sketch()
+
+    def _ask_value(self, title, current):
+        v, ok = QInputDialog.getDouble(self, f"尺寸:{title}", "數值:", current, -1e6, 1e6, 4)
+        return v if ok else None
+
+    def _sk_changed(self):
+        """草圖內容變動:更新拘束清單與自由度顯示。"""
+        if not self._sk:
+            return
+        ed = self._sk["ed"]
+        row = self.cons_list.currentRow()
+        self.cons_list.blockSignals(True)
+        self.cons_list.clear()
+        self.cons_list.addItems([ed.describe(c) for c in ed.constraints])
+        if 0 <= row < len(ed.constraints):
+            self.cons_list.setCurrentRow(row)
+        self.cons_list.blockSignals(False)
+        d = ed.dof()
+        self.dof_label.setText("自由度: 0(完全定義)" if d == 0 else f"自由度: {d}")
+
+    def _on_cons_selected(self, row):
+        if self._sk:
+            ed = self._sk["ed"]
+            ed.highlight = ([q[0] for q in ed.constraints[row]["refs"]]
+                            if 0 <= row < len(ed.constraints) else [])
+            ed._redraw()
+
+    def on_cons_edit(self):
+        if not self._sk:
+            return
+        ed, row = self._sk["ed"], self.cons_list.currentRow()
+        if row < 0 or row >= len(ed.constraints):
+            return
+        c = ed.constraints[row]
+        if c["t"] not in K.DIMENSIONAL:
+            QMessageBox.information(self, "拘束", "只有尺寸可以編輯數值;幾何拘束請刪除後重建")
+            return
+        v = self._ask_value(K.NAMES[c["t"]], c["v"])
+        if v is not None and v > 0 or (v is not None and c["t"] == "angle"):
+            ed.edit_value(c["id"], v)
+
+    def on_cons_delete(self):
+        if not self._sk:
+            return
+        ed, row = self._sk["ed"], self.cons_list.currentRow()
+        if 0 <= row < len(ed.constraints):
+            ed.highlight = []
+            ed.delete_constraint(ed.constraints[row]["id"])
 
     def on_sk_cancel(self):
         if self._sk and (not self._sk["ed"].entities or

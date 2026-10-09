@@ -88,7 +88,8 @@ class Document:
             if not feat.out_ids:
                 feat.out_ids = [self._alloc()]
             name = p.get("name") or f"草圖{feat.out_ids[0]}"
-            bodies[feat.out_ids[0]] = (name, {"entities": p["entities"], "wp": p["wp"]})
+            bodies[feat.out_ids[0]] = (name, {"entities": p["entities"], "wp": p["wp"],
+                                              "constraints": p.get("constraints", [])})
         elif k in ("sketch_extrude", "sketch_revolve"):
             sk = bodies.get(p["sketch"], (None, None))[1]
             if not isinstance(sk, dict) or "entities" not in sk:

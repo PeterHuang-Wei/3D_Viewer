@@ -27,6 +27,18 @@ def arc(c, r, a0, a1):
             "a0": float(a0) % 360.0, "a1": float(a1) % 360.0}
 
 
+def assign_ids(entities):
+    """替沒有編號的圖元指派唯一編號(拘束以編號參照圖元)。就地修改並回傳。"""
+    used = {e["id"] for e in entities if "id" in e}
+    nxt = max(used, default=0) + 1
+    for e in entities:
+        if "id" not in e:
+            e["id"] = nxt
+            used.add(nxt)
+            nxt += 1
+    return entities
+
+
 def rectangle(p1, p2):
     (x1, y1), (x2, y2) = p1, p2
     return [line((x1, y1), (x2, y1)), line((x2, y1), (x2, y2)),
@@ -230,6 +242,7 @@ def trim(entities, idx, click):
 def _map(e, fp, fa=None, flip=False):
     """對圖元套用點變換 fp;圓弧另用 fa 轉角度,flip=True 表示變換反轉方向(鏡射)。"""
     e = copy.deepcopy(e)
+    e.pop("id", None)                       # 複製出來的圖元是新圖元
     if e["t"] == "line":
         e["p1"], e["p2"] = fp(e["p1"]), fp(e["p2"])
     else:

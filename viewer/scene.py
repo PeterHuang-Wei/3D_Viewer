@@ -298,7 +298,7 @@ class Scene:
             o, n = np.array(wp["origin"]), np.array(wp["normal"])
             self.plotter.add_mesh(pv.Plane(center=o, direction=n, i_size=size, j_size=size),
                                   color="#7aa2ff", opacity=0.18, name=f"refplane{pid}", pickable=False)
-            self.plotter.add_point_labels([o], [pname], name=f"refplane_label{pid}",
+            self.plotter.add_point_labels([o], [f"P{pid}"], name=f"refplane_label{pid}",
                                           font_size=12, shape=None, show_points=False,
                                           always_visible=True, pickable=False)
 
