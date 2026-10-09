@@ -4,13 +4,14 @@ import os
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QMainWindow, QAction, QActionGroup, QFileDialog, QMessageBox, QListWidget,
-    QDockWidget, QLabel,
+    QDockWidget, QLabel, QToolBar, QLineEdit, QCheckBox, QDoubleSpinBox,
 )
 
 from core import features as F
 from core.model import Document
 from core.ops import PLACEABLE
 from viewer.scene import Scene, VIEWS
+from viewer.sketch_editor import SketchEditor, TOOLS as SK_TOOLS
 from .dialogs import ask
 from .schemas import SCHEMAS
 
@@ -31,10 +32,21 @@ class MainWindow(QMainWindow):
         self.tree = QListWidget()                       # 目前實體
         self.history = QListWidget()                    # 特徵歷史
         self.history.itemDoubleClicked.connect(lambda _: self.on_edit_feature())
+        self.sketch_list = QListWidget()                # 草圖清單
+        self.sketch_list.itemDoubleClicked.connect(lambda _: self.on_edit_sketch())
+        docks = []
         for title, widget in (("實體", self.tree), ("特徵歷史(雙擊編輯參數)", self.history)):
             dock = QDockWidget(title, self)
             dock.setWidget(widget)
             self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+            docks.append(dock)
+        sdock = QDockWidget("草圖(雙擊編輯)", self)
+        sdock.setWidget(self.sketch_list)
+        self.addDockWidget(Qt.LeftDockWidgetArea, sdock)
+        self.tabifyDockWidget(docks[0], sdock)
+        docks[0].raise_()
+        self._sk = None                                 # 草圖編輯狀態
+        self._build_sketch_bar()
 
         self.wp = None                                  # 鎖定的工作平面
         self.wp_id = None                               # 若鎖定的是參考面,其編號
@@ -42,6 +54,8 @@ class MainWindow(QMainWindow):
         pdock = QDockWidget("參考面(F3 鎖定所選)", self)
         pdock.setWidget(self.planes_list)
         self.addDockWidget(Qt.LeftDockWidgetArea, pdock)
+        self.tabifyDockWidget(docks[0], pdock)
+        docks[0].raise_()
         self.lock_label = QLabel("平面:未鎖定")
         self.statusBar().addPermanentWidget(self.lock_label)
         self.scene.on_selection = self._show_selection
@@ -86,8 +100,17 @@ class MainWindow(QMainWindow):
         for kind in ("box", "cylinder", "sphere", "cone", "torus"):
             c.addAction(self._action(SCHEMAS[kind][0] + "...", lambda _, k=kind: self.on_create(k)))
         c.addSeparator()
-        c.addAction(self._action("草圖拉伸...", lambda _=None: self.on_create("extrude")))
-        c.addAction(self._action("草圖旋轉...", lambda _=None: self.on_create("revolve")))
+        c.addAction(self._action("快速拉伸(輪廓參數)...", lambda _=None: self.on_create("extrude")))
+        c.addAction(self._action("快速旋轉(輪廓參數)...", lambda _=None: self.on_create("revolve")))
+
+        sk = bar.addMenu("草圖(&S)")
+        sk.addAction(self._action("在鎖定平面上新建草圖", self.on_new_sketch, "F4"))
+        sk.addAction(self._action("編輯所選草圖...", self.on_edit_sketch))
+        sk.addSeparator()
+        sk.addAction(self._action("草圖拉伸(實體/切除)...", lambda _=None: self.on_sketch_solid("sketch_extrude")))
+        sk.addAction(self._action("草圖旋轉(實體/切除)...", lambda _=None: self.on_sketch_solid("sketch_revolve")))
+        sk.addSeparator()
+        sk.addAction(self._action("刪除所選草圖", self.on_delete_sketch))
 
         t = bar.addMenu("變換(&T)")
         t.addAction(self._action("平移...", lambda: self.on_modify("translate")))
@@ -241,6 +264,11 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "提示", "請先在特徵歷史選取一個特徵")
             return
         feat = self.doc.features[k]
+        if feat.kind == "sketch":
+            sk = next((x for i, _, x in self.doc.sketches if i in feat.out_ids), None)
+            self._begin_sketch(sk["wp"] if sk else feat.params["wp"], feat.params["entities"], k,
+                               feat.out_ids[0] if feat.out_ids else None)
+            return
         if feat.kind not in SCHEMAS:
             QMessageBox.information(self, "提示", f"「{feat.label}」沒有可編輯的參數")
             return
@@ -434,6 +462,175 @@ class MainWindow(QMainWindow):
         if v:
             self._run(lambda: self.doc.add_feature(kind, {**v, "body": body.id, "edges": edges}))
 
+    # --- 草圖 ---
+    def _build_sketch_bar(self):
+        bar = QToolBar("草圖工具", self)
+        bar.setMovable(False)
+        self.addToolBar(Qt.TopToolBarArea, bar)
+        self.sk_bar = bar
+        grp = QActionGroup(self)
+        self.sk_tool_actions = {}
+        for tool in ("select", "line", "rect", "circle", "arc", "trim", "delete"):
+            act = QAction(SK_TOOLS[tool], self)
+            act.setCheckable(True)
+            act.triggered.connect(lambda _, t=tool: self._sk and self._sk["ed"].set_tool(t))
+            grp.addAction(act)
+            bar.addAction(act)
+            self.sk_tool_actions[tool] = act
+        bar.addSeparator()
+        for text, slot, key in (("鏡射...", self.on_sk_mirror, None), ("陣列...", self.on_sk_pattern, None),
+                                ("刪除所選", lambda: self._sk["ed"].delete_selected(), "Del"),
+                                ("復原", lambda: self._sk["ed"].undo(), "Ctrl+Z"),
+                                ("重做", lambda: self._sk["ed"].redo(), "Ctrl+Y"),
+                                ("正視於草圖", lambda: self._sk["ed"].view_normal(), None)):
+            act = QAction(text, self)
+            if key:
+                act.setShortcut(key)
+            act.triggered.connect(lambda _=None, f=slot: self._sk and f())
+            bar.addAction(act)
+        esc = QAction("取消目前操作", self)
+        esc.setShortcut("Esc")
+        esc.triggered.connect(lambda _=None: self._sk and self._sk["ed"].cancel_op())
+        self.addAction(esc)
+        bar.addSeparator()
+        self.sk_grid = QCheckBox("格點吸附")
+        self.sk_grid.setChecked(True)
+        self.sk_grid.toggled.connect(lambda on: self._sk and setattr(self._sk["ed"], "grid", on))
+        self.sk_step = QDoubleSpinBox()
+        self.sk_step.setRange(0.01, 1000)
+        self.sk_step.setValue(1.0)
+        self.sk_step.valueChanged.connect(lambda v: self._sk and setattr(self._sk["ed"], "grid_step", v))
+        self.sk_input = QLineEdit()
+        self.sk_input.setPlaceholderText("數值輸入:x,y  @dx,dy  @長度<角度  半徑 → Enter")
+        self.sk_input.setMinimumWidth(300)
+        self.sk_input.returnPressed.connect(self.on_sk_typed)
+        for w in (self.sk_grid, self.sk_step, self.sk_input):
+            bar.addWidget(w)
+        bar.addSeparator()
+        bar.addAction(self._action("✔ 完成草圖", self.on_sk_finish))
+        bar.addAction(self._action("✘ 取消", self.on_sk_cancel))
+        bar.hide()
+
+    def on_new_sketch(self):
+        if not self.wp:
+            QMessageBox.information(self, "草圖", "請先鎖定平面:選取一個面或參考面後按 F3,或用「平面」選單鎖定 XY/XZ/YZ")
+            return
+        self._begin_sketch(self.wp, [], None, None)
+
+    def on_edit_sketch(self):
+        r = self.sketch_list.currentRow()
+        if r < 0 or r >= len(self.doc.sketches):
+            QMessageBox.information(self, "草圖", "請先在「草圖」清單選取一個草圖")
+            return
+        sid, _, sk = self.doc.sketches[r]
+        k = next(i for i, f in enumerate(self.doc.features) if f.kind == "sketch" and sid in f.out_ids)
+        self._begin_sketch(sk["wp"], sk["entities"], k, sid)
+
+    def _begin_sketch(self, wp, entities, edit_index, sid):
+        if self._sk:
+            return
+        ed = SketchEditor(self.scene, wp, entities, status=self.statusBar().showMessage)
+        self._sk = {"ed": ed, "edit": edit_index, "wp": wp, "plane_id": self.wp_id, "sid": sid}
+        self.scene.sketch = ed
+        self.scene.hide_sketch = sid
+        self.scene._draw_sketches()
+        self.menuBar().setEnabled(False)
+        self.sk_bar.show()
+        self.sk_tool_actions["line"].setChecked(True)
+        ed.tool = "line"
+        ed.grid, ed.grid_step = self.sk_grid.isChecked(), self.sk_step.value()
+        ed.start()
+
+    def _end_sketch(self):
+        if not self._sk:
+            return
+        self._sk["ed"].stop()
+        self.scene.sketch, self.scene.hide_sketch = None, None
+        self._sk = None
+        self.sk_bar.hide()
+        self.menuBar().setEnabled(True)
+        self._update(reset_camera=False)
+        self.scene.set_view("等角視")
+
+    def on_sk_finish(self):
+        if not self._sk:
+            return
+        ed, ents = self._sk["ed"], self._sk["ed"].entities
+        if not ents:
+            QMessageBox.information(self, "草圖", "草圖是空的;要放棄請按「取消」")
+            return
+        if self._sk["edit"] is not None:
+            ok = self._run(lambda: self.doc.edit_feature(self._sk["edit"], {"entities": ents}))
+        else:
+            params = {"entities": ents, "wp": self._sk["wp"]}
+            if self._sk["plane_id"] is not None:
+                params["plane_id"] = self._sk["plane_id"]
+            ok = self._run(lambda: self.doc.add_feature("sketch", params))
+        if ok:
+            self._end_sketch()
+
+    def on_sk_cancel(self):
+        if self._sk and (not self._sk["ed"].entities or
+                         QMessageBox.question(self, "草圖", "放棄這次的草圖變更?") == QMessageBox.Yes):
+            self._end_sketch()
+
+    def on_sk_typed(self):
+        if not self._sk:
+            return
+        try:
+            self._sk["ed"].typed(self.sk_input.text())
+        except ValueError as e:
+            self.statusBar().showMessage(f"輸入無效:{e}")
+            return
+        self.sk_input.clear()
+
+    def on_sk_mirror(self):
+        v = ask("鏡射(對所選圖元;未選取則全部)", [
+            ("axis", "鏡射軸", "combo", ["草圖 Y 軸(左右鏡射)", "草圖 X 軸(上下鏡射)", "點選兩點指定"])], self)
+        if v:
+            self._sk["ed"].mirror_axis({"草圖 Y": "Y", "草圖 X": "X"}.get(v["axis"][:4]))
+
+    def on_sk_pattern(self):
+        v = ask("陣列(對所選圖元;未選取則全部)", [
+            ("kind", "陣列類型", "combo", ["線性", "圓形"]),
+            ("n", "總數量(含原件)", "num", 3),
+            ("dx", "線性:X 間距", "num", 10), ("dy", "線性:Y 間距", "num", 0),
+            ("angle", "圓形:總角度", "num", 360),
+            ("cx", "圓形:中心 X", "num", 0), ("cy", "圓形:中心 Y", "num", 0)], self)
+        if v:
+            self._sk["ed"].pattern("linear" if v["kind"] == "線性" else "circular", int(v["n"]),
+                                   v["dx"], v["dy"], v["angle"], (v["cx"], v["cy"]))
+
+    def on_sketch_solid(self, kind):
+        sketches, bodies = self.doc.sketches, self.doc.bodies
+        if not sketches:
+            QMessageBox.information(self, "草圖", "還沒有草圖,請先建立草圖")
+            return
+        r = self.sketch_list.currentRow()
+        items = [f"{i}: {n}" for i, n, _ in sketches]
+        title, fields = SCHEMAS[kind]
+        fields = [("sketch", "草圖", "combo", items)] + list(fields) + [
+            ("target", "目標實體(聯集/切除用)", "combo", [f"{b.id}: {b.name}" for b in bodies] or ["(無)"])]
+        v = ask(title, fields, self, initial={"sketch": items[r if 0 <= r < len(items) else -1]})
+        if not v:
+            return
+        params = {k: val for k, val in v.items() if k not in ("sketch", "target")}
+        params["sketch"] = int(v["sketch"].split(":")[0])
+        if v["op"] != "新實體":
+            if not bodies:
+                QMessageBox.information(self, "草圖", "沒有可作為目標的實體")
+                return
+            params["target"] = int(v["target"].split(":")[0])
+        self._run(lambda: self.doc.add_feature(kind, params))
+
+    def on_delete_sketch(self):
+        r = self.sketch_list.currentRow()
+        if r < 0 or r >= len(self.doc.sketches):
+            QMessageBox.information(self, "草圖", "請先在「草圖」清單選取一個草圖")
+            return
+        sid = self.doc.sketches[r][0]
+        self._run(lambda: self.doc.add_feature("delete", {"body": sid}))
+
     # --- 檢視 ---
     def on_wireframe(self, on):
         self.scene.wireframe = on
@@ -455,6 +652,8 @@ class MainWindow(QMainWindow):
         self.scene.refresh(self.doc, reset_camera and bool(self.doc.bodies))
         self.tree.clear()
         self.tree.addItems([f"{b.id}: {b.name}" for b in self.doc.bodies])
+        self.sketch_list.clear()
+        self.sketch_list.addItems([f"{i}: {n}" for i, n, _ in self.doc.sketches])
         self.planes_list.clear()
         self.planes_list.addItems([f"{i}: {n}" for i, n, _ in self.doc.planes])
         self.history.clear()

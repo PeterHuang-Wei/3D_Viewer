@@ -7,6 +7,8 @@ from core.model import Document
 import vtk
 
 from .mesh import shape_to_mesh, shape_to_edges
+from .sketch_editor import lines_poly
+from core import sketch2d as SK
 from .picking import EdgeIndex, face_at, nearest_body, constrain_delta
 
 COLORS = ["#8fb8de", "#e0a96d", "#9bc59d", "#c9a0dc", "#d9777a"]
@@ -35,6 +37,11 @@ class _MouseFilter(QObject):
         left = getattr(ev, "button", lambda: None)() == Qt.LeftButton
         if t == QEvent.MouseButtonPress and left:
             return self.scene.qt_press(ev)
+        right = getattr(ev, "button", lambda: None)() == Qt.RightButton
+        if right and t == QEvent.MouseButtonPress:
+            self.scene._rpress = self.scene._disp(ev)
+        if right and t == QEvent.MouseButtonRelease:
+            self.scene.qt_right_click(ev)
         if t == QEvent.MouseMove:
             return self.scene.qt_move(ev)
         if t == QEvent.MouseButtonRelease and left:
@@ -64,6 +71,9 @@ class Scene:
         self._press = None
         self.locked = None  # 鎖定的工作平面 dict(origin/xdir/normal)
         self.lock_id = None  # 若鎖定的是參考面,其編號
+        self.sketch = None  # 進行中的 SketchEditor
+        self.hide_sketch = None  # 編輯中而暫時隱藏的草圖編號
+        self._rpress = None
         # 滑鼠/鍵盤改由 Qt 事件過濾器處理(VTK 的放開事件在部分版本不會送到觀察者)
         self._filter = _MouseFilter(self)
         self.plotter.installEventFilter(self._filter)
@@ -101,6 +111,7 @@ class Scene:
                     line_width=1.5, name=f"edge{i}",
                 )
         self._draw_planes()
+        self._draw_sketches()
         self._draw_lock(render=False)
         if reset_camera:
             self.set_view("等角視")
@@ -141,6 +152,14 @@ class Scene:
             return None
         return np.array(picker.GetPickPosition())
 
+    def qt_right_click(self, ev):
+        """草圖模式下,右鍵點一下(未拖曳)結束目前的連續操作。"""
+        if self.mode == "sketch" and self.sketch and self._rpress is not None:
+            x, y = self._disp(ev)
+            if abs(x - self._rpress[0]) <= 3 and abs(y - self._rpress[1]) <= 3:
+                self.sketch.cancel_op()
+        self._rpress = None
+
     def qt_press(self, ev) -> bool:
         """回傳 True 表示事件已處理(不再交給 VTK 旋轉視角)。"""
         self._press = self._disp(ev)
@@ -157,6 +176,9 @@ class Scene:
         return True
 
     def qt_move(self, ev) -> bool:
+        if self.mode == "sketch" and self.sketch:
+            self.sketch.hover(*self._disp(ev))
+            return False
         if self._drag is None:
             return False
         body, p0, depth, _ = self._drag
@@ -184,6 +206,12 @@ class Scene:
             self._press = None
             self._finish_drag()
             return True
+        if self.mode == "sketch" and self.sketch and self._press is not None:
+            x, y = self._disp(ev)
+            if abs(x - self._press[0]) <= 3 and abs(y - self._press[1]) <= 3:
+                self.sketch.click(x, y)
+            self._press = None
+            return False
         if self.mode not in ("edge", "face") or self._press is None:
             return False
         x, y = self._disp(ev)
@@ -244,6 +272,18 @@ class Scene:
                  for m in self._meshes if m.n_cells]
         return max(sizes, default=40.0) * 0.6
 
+    def _draw_sketches(self) -> None:
+        """畫出文件中所有草圖(橘色線)。"""
+        for name in [n for n in self.plotter.renderer.actors if str(n).startswith("sketchobj")]:
+            self.plotter.remove_actor(name, render=False)
+        if self._doc is None:
+            return
+        for sid, _, sk in self._doc.sketches:
+            if sid != self.hide_sketch and sk["entities"]:
+                self.plotter.add_mesh(lines_poly(SK.polylines_global(sk["entities"], sk["wp"])),
+                                      color="#ff8c00", line_width=2.5, name=f"sketchobj{sid}",
+                                      pickable=False)
+
     def _draw_planes(self) -> None:
         """畫出所有參考面(被鎖定的那個由 _draw_lock 以青色畫)。"""
         import pyvista as pv
@@ -270,8 +310,10 @@ class Scene:
             origin, normal = np.array(self.locked["origin"]), np.array(self.locked["normal"])
             size = self._plane_size()
             self.plotter.add_mesh(pv.Plane(center=origin, direction=normal, i_size=size, j_size=size),
-                                  color="cyan", opacity=0.25, name="lock_plane", pickable=False)
-            self.plotter.add_mesh(pv.Arrow(start=origin, direction=normal, scale=size * 0.25),
-                                  color="cyan", name="lock_normal", pickable=False)
+                                  color="cyan", opacity=0.1 if self.mode == "sketch" else 0.25,
+                                  name="lock_plane", pickable=False)
+            if self.mode != "sketch":
+                self.plotter.add_mesh(pv.Arrow(start=origin, direction=normal, scale=size * 0.25),
+                                      color="cyan", name="lock_normal", pickable=False)
         if render:
             self.plotter.render()

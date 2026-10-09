@@ -7,7 +7,7 @@ import cadquery as cq
 
 from .io_step import export_step, shapes_to_step_text
 from . import features as F
-from .ops import CREATORS, MODIFIERS, LABELS, PLACEABLE
+from .ops import CREATORS, MODIFIERS, LABELS, PLACEABLE, sketch_solid
 
 FORMAT_VERSION = 1
 
@@ -57,7 +57,13 @@ class Document:
     def planes(self) -> list[tuple[int, str, dict]]:
         """目前的參考面 [(編號, 名稱, 平面 dict)]。"""
         last = self.states[-1] if self.states else {}
-        return [(i, n, s) for i, (n, s) in last.items() if isinstance(s, dict)]
+        return [(i, n, s) for i, (n, s) in last.items() if isinstance(s, dict) and "origin" in s]
+
+    @property
+    def sketches(self) -> list[tuple[int, str, dict]]:
+        """目前的草圖 [(編號, 名稱, {"entities", "wp"})]。"""
+        last = self.states[-1] if self.states else {}
+        return [(i, n, s) for i, (n, s) in last.items() if isinstance(s, dict) and "entities" in s]
 
     def clear(self) -> None:
         self.__init__()
@@ -66,7 +72,7 @@ class Document:
     def _apply(self, feat: Feature, bodies: dict) -> None:
         p, k = feat.params, feat.kind
         pid = p.get("plane_id")                    # 綁定參考面時,以參考面目前位置為準
-        if pid in bodies and isinstance(bodies[pid][1], dict):
+        if pid in bodies and isinstance(bodies[pid][1], dict) and "origin" in bodies[pid][1]:
             p = {**p, "wp": bodies[pid][1]}
         if k == "refplane":
             if not p.get("wp"):
@@ -76,6 +82,29 @@ class Document:
             name = p.get("name") or f"參考面{feat.out_ids[0]}"
             bodies[feat.out_ids[0]] = (name, F.offset_plane(
                 p["wp"], p["offset"], p.get("rx", 0), p.get("ry", 0)))
+        elif k == "sketch":
+            if not p.get("wp"):
+                raise ValueError("草圖缺少工作平面")
+            if not feat.out_ids:
+                feat.out_ids = [self._alloc()]
+            name = p.get("name") or f"草圖{feat.out_ids[0]}"
+            bodies[feat.out_ids[0]] = (name, {"entities": p["entities"], "wp": p["wp"]})
+        elif k in ("sketch_extrude", "sketch_revolve"):
+            sk = bodies.get(p["sketch"], (None, None))[1]
+            if not isinstance(sk, dict) or "entities" not in sk:
+                raise ValueError("找不到草圖")
+            shape = sketch_solid(k, p, sk)
+            op = p.get("op", "新實體")
+            if op == "新實體":
+                if not feat.out_ids:
+                    feat.out_ids = [self._alloc()]
+                bodies[feat.out_ids[0]] = (f"{feat.label}{feat.out_ids[0]}", shape)
+            else:
+                tname, target = bodies[p["target"]]
+                res = F.boolean("聯集" if op == "聯集" else "差集", target, shape)
+                if op == "切除" and abs(res.Volume() - target.Volume()) < 1e-9:
+                    raise ValueError("切除範圍與目標實體沒有重疊")
+                bodies[p["target"]] = (tname, res)
         elif k in CREATORS:
             shapes = CREATORS[k](p)
             if p.get("wp") and k in PLACEABLE:

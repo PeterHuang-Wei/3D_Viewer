@@ -3,13 +3,14 @@ import cadquery as cq
 
 from . import features as F
 from . import thread as T
+from . import sketch2d as SK
 from .io_step import step_text_to_shapes
 
 LABELS = {
     "box": "方塊", "cylinder": "圓柱", "sphere": "球", "cone": "圓錐", "torus": "環",
-    "extrude": "草圖拉伸", "revolve": "草圖旋轉", "rod": "外螺紋螺桿",
+    "extrude": "快速拉伸", "revolve": "快速旋轉", "rod": "外螺紋螺桿",
     "thread_tool": "內螺紋工具體", "step": "匯入 STEP",
-    "translate": "平移", "refplane": "參考面", "scale": "縮放", "rotate": "旋轉", "fillet": "圓角", "chamfer": "倒角",
+    "translate": "平移", "sketch": "草圖", "sketch_extrude": "草圖拉伸", "sketch_revolve": "草圖旋轉", "refplane": "參考面", "scale": "縮放", "rotate": "旋轉", "fillet": "圓角", "chamfer": "倒角",
     "thread_hole": "螺紋孔", "boolean": "布林運算", "delete": "刪除",
 }
 
@@ -83,3 +84,12 @@ MODIFIERS = {
     "chamfer": lambda p, s: F.chamfer(s, set(p["edges"]), p["d"], p.get("d2") or None),
     "thread_hole": _hole,
 }
+
+
+def sketch_solid(kind: str, p: dict, sk: dict) -> cq.Shape:
+    """由草圖({"entities","wp"})依參數產生實體(全域座標)。"""
+    ents, wp = sk["entities"], sk["wp"]
+    if kind == "sketch_extrude":
+        depth = -p["depth"] if p.get("flip") else p["depth"]
+        return SK.extrude_solid(ents, wp, depth, p.get("sym", False))
+    return SK.revolve_solid(ents, wp, p["angle"], "X" if "X" in p.get("axis", "Y") else "Y")
