@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
 
 from core import features as F
 from core import sketch_solver as K
-from core.model import Document
+from core.model import Document, STL_QUALITY
 from core.ops import PLACEABLE
 from viewer.scene import Scene, VIEWS
 from viewer.sketch_editor import SketchEditor, TOOLS as SK_TOOLS, CONSTRAINT_TOOLS
@@ -18,6 +18,7 @@ from .dialogs import ask
 from .schemas import SCHEMAS
 
 STEP_FILTER = "STEP 檔案 (*.step *.stp *.STEP *.STP)"
+STL_FILTER = "STL 檔案 (*.stl *.STL)"
 PROJ_FILTER = "3D Viewer 專案 (*.v3d)"
 APP = "3D Viewer"
 PLACED = set(PLACEABLE) | {"extrude", "revolve", "thread_hole"}   # 可放在鎖定平面上的特徵
@@ -86,6 +87,7 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         m.addAction(self._action("匯入 STEP...", self.on_import_step))
         m.addAction(self._action("匯出 STEP...", self.on_export_step))
+        m.addAction(self._action("匯出 STL...", self.on_export_stl))
         m.addSeparator()
         m.addAction(self._action("結束", self.close, "Ctrl+Q"))
 
@@ -204,9 +206,22 @@ class MainWindow(QMainWindow):
             self.on_save_as()
 
     def on_save_as(self):
-        path, _ = QFileDialog.getSaveFileName(self, "另存專案", "", PROJ_FILTER)
-        if path:
-            self._save(path if path.lower().endswith(".v3d") else path + ".v3d")
+        """另存新檔:依檔名或所選類型存成專案(.v3d)、STEP 或 STL。"""
+        path, flt = QFileDialog.getSaveFileName(
+            self, "另存新檔", "", f"{PROJ_FILTER};;{STEP_FILTER};;{STL_FILTER}")
+        if not path:
+            return
+        low = path.lower()
+        if low.endswith((".step", ".stp")):
+            self._export_step(path)
+        elif low.endswith(".stl"):
+            self._export_stl(path)
+        elif "STEP" in flt and not low.endswith(".v3d"):
+            self._export_step(path + ".step")
+        elif "STL" in flt and not low.endswith(".v3d"):
+            self._export_stl(path + ".stl")
+        else:
+            self._save(path if low.endswith(".v3d") else path + ".v3d")
 
     def _save(self, path):
         try:
@@ -223,16 +238,39 @@ class MainWindow(QMainWindow):
 
     def on_export_step(self):
         path, _ = QFileDialog.getSaveFileName(self, "匯出 STEP", "", STEP_FILTER)
-        if not path:
-            return
-        if not path.lower().endswith((".step", ".stp")):
-            path += ".step"
+        if path:
+            self._export_step(path if path.lower().endswith((".step", ".stp")) else path + ".step")
+
+    def _export_step(self, path):
         try:
             self.doc.export_step(path)
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "匯出失敗", str(e))
             return
         self.statusBar().showMessage(f"已匯出 {os.path.basename(path)}")
+
+    def on_export_stl(self):
+        path, _ = QFileDialog.getSaveFileName(self, "匯出 STL", "", STL_FILTER)
+        if path:
+            self._export_stl(path if path.lower().endswith(".stl") else path + ".stl")
+
+    def _export_stl(self, path):
+        if not self.doc.bodies:
+            QMessageBox.information(self, "匯出 STL", "目前沒有可匯出的實體")
+            return
+        v = ask("STL 匯出設定", [
+            ("q", "精細度", "combo", list(STL_QUALITY)),
+            ("ascii", "ASCII 格式(預設為檔案較小的二進位)", "bool", False)], self, initial={"q": "高(預設)"})
+        if not v:
+            return
+        tol, ang = STL_QUALITY[v["q"]]
+        try:
+            n = self.doc.export_stl(path, tol, ang, v["ascii"])
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "匯出失敗", str(e))
+            return
+        self.statusBar().showMessage(
+            f"已匯出 {os.path.basename(path)}({n:,} 個三角形,弦高誤差 {tol} mm)")
 
     # --- 編輯 / 歷史 ---
     def _run(self, fn):

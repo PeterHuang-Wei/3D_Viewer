@@ -11,6 +11,23 @@ from .ops import CREATORS, MODIFIERS, LABELS, PLACEABLE, sketch_solid
 
 FORMAT_VERSION = 1
 
+# STL 精細度預設: 名稱 -> (弦高誤差 mm, 角度誤差 rad)
+STL_QUALITY = {"標準": (0.05, 0.2), "高(預設)": (0.01, 0.1), "超高": (0.002, 0.05)}
+
+
+def stl_triangle_count(path: str) -> int:
+    """讀取 STL(二進位或 ASCII)的三角形數量。"""
+    import os
+    size = os.path.getsize(path)
+    with open(path, "rb") as f:
+        head = f.read(84)
+        if len(head) == 84:
+            n = int.from_bytes(head[80:84], "little")
+            if 84 + 50 * n == size:
+                return n
+    with open(path, encoding="utf-8", errors="ignore") as f:
+        return sum(1 for line in f if line.strip().startswith("facet normal"))
+
 
 @dataclass
 class Body:
@@ -211,6 +228,17 @@ class Document:
 
     def export_step(self, path: str) -> None:
         export_step([b.shape for b in self.bodies], path)
+
+    def export_stl(self, path: str, tolerance: float = 0.01, angular: float = 0.1, ascii: bool = False) -> int:
+        """匯出所有實體為 STL。tolerance 為弦高誤差(mm,絕對值),angular 為角度誤差(弧度)。
+        回傳三角形數量。"""
+        shapes = [b.shape for b in self.bodies]
+        if not shapes:
+            raise ValueError("沒有可匯出的實體")
+        comp = cq.Compound.makeCompound(shapes)
+        if not comp.exportStl(path, tolerance, angular, ascii, relative=False):
+            raise ValueError("STL 匯出失敗")
+        return stl_triangle_count(path)
 
     def save_project(self, path: str) -> None:
         data = {"app": "3D Viewer", "version": FORMAT_VERSION,
