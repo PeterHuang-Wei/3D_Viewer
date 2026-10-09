@@ -10,7 +10,7 @@ LABELS = {
     "box": "方塊", "cylinder": "圓柱", "sphere": "球", "cone": "圓錐", "torus": "環",
     "extrude": "快速拉伸", "revolve": "快速旋轉", "rod": "外螺紋螺桿",
     "thread_tool": "內螺紋工具體", "step": "匯入 STEP",
-    "translate": "平移", "sketch": "草圖", "sketch_extrude": "草圖拉伸", "sketch_revolve": "草圖旋轉", "refplane": "參考面", "scale": "縮放", "rotate": "旋轉", "fillet": "圓角", "chamfer": "倒角",
+    "translate": "平移", "sketch": "草圖", "sketch_extrude": "草圖拉伸", "sketch_revolve": "草圖旋轉", "sketch_sweep": "草圖掃掠", "refplane": "參考面", "scale": "縮放", "rotate": "旋轉", "fillet": "圓角", "chamfer": "倒角",
     "thread_hole": "螺紋孔", "boolean": "布林運算", "delete": "刪除",
 }
 
@@ -93,3 +93,30 @@ def sketch_solid(kind: str, p: dict, sk: dict) -> cq.Shape:
         depth = -p["depth"] if p.get("flip") else p["depth"]
         return SK.extrude_solid(ents, wp, depth, p.get("sym", False))
     return SK.revolve_solid(ents, wp, p["angle"], "X" if "X" in p.get("axis", "Y") else "Y")
+
+
+def sweep_solid(p: dict, profile: dict, path: dict) -> cq.Shape:
+    """輪廓草圖沿路徑草圖掃掠。p["align"]=True 時把輪廓座標系移到路徑起點、並使其法向與路徑相切。"""
+    wire = SK.path_wire(path["entities"], path["wp"])
+    first = wire.Edges()[0]
+    start, tangent = wire.startPoint(), first.tangentAt(0)
+    if p.get("align", False):
+        px = F.plane_from_dict(profile["wp"]).xDir
+        px = px - tangent * px.dot(tangent)                     # 取輪廓 X 軸在垂直面上的投影
+        if px.Length < 1e-9:
+            px = cq.Plane(origin=(0, 0, 0), normal=tangent.toTuple()).xDir
+        place = cq.Plane(origin=start.toTuple(), xDir=px.toTuple(), normal=tangent.toTuple()).rG
+    else:
+        place = F.plane_from_dict(profile["wp"]).rG
+    solids = []
+    for f in SK.local_faces(profile["entities"]):
+        g = f.transformShape(place)
+        try:
+            solids.append(cq.Solid.sweep(g.outerWire(), g.innerWires(), wire, True,
+                                         p.get("frenet", True), None, p.get("transition", "transformed")))
+        except Exception as e:  # noqa: BLE001
+            raise ValueError("掃掠失敗:輪廓需位於路徑起點並垂直於路徑(或勾選自動對齊)") from e
+    res = SK._fuse(solids)
+    if not res.isValid() or res.Volume() < 1e-9:
+        raise ValueError("掃掠結果無效:請確認輪廓位於路徑起點、垂直於路徑起始方向")
+    return res

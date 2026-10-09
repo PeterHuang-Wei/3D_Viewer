@@ -42,6 +42,10 @@ SCHEMAS = {
     "sketch_revolve": ("草圖旋轉", [("angle", "旋轉角度", "num", 360),
                                     ("axis", "旋轉軸", "combo", ["草圖 Y 軸", "草圖 X 軸"]),
                                     ("op", "操作", "combo", ["新實體", "聯集", "切除"])]),
+    "sketch_sweep": ("草圖掃掠", [("align", "自動對齊:輪廓移到路徑起點並垂直於路徑", "bool", False),
+                                  ("frenet", "輪廓隨路徑轉向(Frenet)", "bool", True),
+                                  ("transition", "轉角處理", "combo", ["transformed", "round", "right"]),
+                                  ("op", "操作", "combo", ["新實體", "聯集", "切除"])]),
     "refplane": ("參考面(平行 / 傾斜)", [
         ("name", "名稱(可留空)", "text", ""),
         ("offset", "沿法向偏移距離", "num", 10),

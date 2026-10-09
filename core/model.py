@@ -7,7 +7,7 @@ import cadquery as cq
 
 from .io_step import export_step, shapes_to_step_text
 from . import features as F
-from .ops import CREATORS, MODIFIERS, LABELS, PLACEABLE, sketch_solid
+from .ops import CREATORS, MODIFIERS, LABELS, PLACEABLE, sketch_solid, sweep_solid
 
 FORMAT_VERSION = 1
 
@@ -107,11 +107,14 @@ class Document:
             name = p.get("name") or f"草圖{feat.out_ids[0]}"
             bodies[feat.out_ids[0]] = (name, {"entities": p["entities"], "wp": p["wp"],
                                               "constraints": p.get("constraints", [])})
-        elif k in ("sketch_extrude", "sketch_revolve"):
-            sk = bodies.get(p["sketch"], (None, None))[1]
-            if not isinstance(sk, dict) or "entities" not in sk:
-                raise ValueError("找不到草圖")
-            shape = sketch_solid(k, p, sk)
+        elif k in ("sketch_extrude", "sketch_revolve", "sketch_sweep"):
+            def sk_of(key):
+                sk = bodies.get(p[key], (None, None))[1]
+                if not isinstance(sk, dict) or "entities" not in sk:
+                    raise ValueError("找不到草圖")
+                return sk
+            shape = sweep_solid(p, sk_of("profile"), sk_of("path")) if k == "sketch_sweep" \
+                else sketch_solid(k, p, sk_of("sketch"))
             op = p.get("op", "新實體")
             if op == "新實體":
                 if not feat.out_ids:

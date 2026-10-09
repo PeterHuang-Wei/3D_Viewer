@@ -461,3 +461,38 @@ def polylines_global(entities, wp):
     pl = plane_from_dict(wp)
     o, x, y = (np.array(v.toTuple()) for v in (pl.origin, pl.xDir, pl.yDir))
     return [np.array([o + u * x + v * y for u, v in sample(e)]) for e in entities]
+
+
+# --- 掃掠 ---
+def ordered_chain(entities):
+    """把草圖圖元排成單一連續路徑 [(圖元, 是否反向), ...](可為封閉)。不是單一連續線時丟出錯誤。"""
+    segs = [e for e in entities if not is_closed_by_itself(e)]
+    if not segs or len(segs) != len(entities):
+        raise ValueError("路徑草圖只能包含相連的線與圓弧(不可有整圓)")
+    ends = [endpoints(e) for e in segs]
+    # 端點 -> 連到它的 (線段, 端) 清單
+    def at(pt, skip):
+        return [(j, k) for j in range(len(segs)) if j != skip for k in (0, 1) if _close(ends[j][k], pt)]
+    degree = lambda i, k: len(at(ends[i][k], i))  # noqa: E731
+    if any(degree(i, k) > 1 for i in range(len(segs)) for k in (0, 1)):
+        raise ValueError("路徑不可分岔")
+    starts = [i for i in range(len(segs)) if degree(i, 0) == 0 or degree(i, 1) == 0]
+    first = starts[0] if starts else 0
+    rev = degree(first, 0) != 0 if starts else False        # 讓起點落在沒有鄰居的那端
+    chain, used, cur = [(segs[first], rev)], {first}, ends[first][0 if rev else 1]
+    while True:
+        nxt = [(j, k) for j, k in at(cur, -1) if j not in used]
+        if not nxt:
+            break
+        j, k = nxt[0]
+        used.add(j)
+        chain.append((segs[j], k == 1))
+        cur = ends[j][1 - k]
+    if len(used) != len(segs):
+        raise ValueError("路徑草圖必須是單一連續的線/圓弧(目前有分離的線段)")
+    return chain
+
+
+def path_wire(entities, wp):
+    """路徑草圖 -> 全域座標的 Wire。"""
+    return to_global(_wire(ordered_chain(entities)), wp)

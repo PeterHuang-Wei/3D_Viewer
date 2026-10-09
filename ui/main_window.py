@@ -113,6 +113,7 @@ class MainWindow(QMainWindow):
         sk.addSeparator()
         sk.addAction(self._action("草圖拉伸(實體/切除)...", lambda _=None: self.on_sketch_solid("sketch_extrude")))
         sk.addAction(self._action("草圖旋轉(實體/切除)...", lambda _=None: self.on_sketch_solid("sketch_revolve")))
+        sk.addAction(self._action("草圖掃掠(實體/切除)...", self.on_sketch_sweep))
         sk.addSeparator()
         sk.addAction(self._action("刪除所選草圖", self.on_delete_sketch))
 
@@ -753,6 +754,31 @@ class MainWindow(QMainWindow):
                 return
             params["target"] = int(v["target"].split(":")[0])
         self._run(lambda: self.doc.add_feature(kind, params))
+
+    def on_sketch_sweep(self):
+        sketches, bodies = self.doc.sketches, self.doc.bodies
+        if len(sketches) < 2:
+            QMessageBox.information(self, "草圖掃掠", "需要兩個草圖:一個封閉輪廓、一個路徑(相連的線/圓弧)")
+            return
+        items = [f"{i}: {n}" for i, n, _ in sketches]
+        title, fields = SCHEMAS["sketch_sweep"]
+        fields = [("profile", "輪廓草圖(封閉)", "combo", items), ("path", "路徑草圖(相連的線/圓弧)", "combo", items)] \
+            + list(fields) + [("target", "目標實體(聯集/切除用)", "combo",
+                               [f"{b.id}: {b.name}" for b in bodies] or ["(無)"])]
+        v = ask(title, fields, self, initial={"profile": items[-2], "path": items[-1]})
+        if not v:
+            return
+        params = {k: val for k, val in v.items() if k not in ("profile", "path", "target")}
+        params["profile"], params["path"] = int(v["profile"].split(":")[0]), int(v["path"].split(":")[0])
+        if params["profile"] == params["path"]:
+            QMessageBox.warning(self, "草圖掃掠", "輪廓與路徑不可為同一個草圖")
+            return
+        if v["op"] != "新實體":
+            if not bodies:
+                QMessageBox.information(self, "草圖掃掠", "沒有可作為目標的實體")
+                return
+            params["target"] = int(v["target"].split(":")[0])
+        self._run(lambda: self.doc.add_feature("sketch_sweep", params))
 
     def on_delete_sketch(self):
         r = self.sketch_list.currentRow()
