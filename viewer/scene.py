@@ -1,5 +1,6 @@
 """3D 視窗:封裝 pyvistaqt 的 QtInteractor。"""
 import numpy as np
+from PyQt5.QtCore import QEvent, QObject, Qt
 from pyvistaqt import QtInteractor
 
 from core.model import Document
@@ -22,6 +23,29 @@ VIEWS = {
 }
 
 
+class _MouseFilter(QObject):
+    """把 3D 視窗的滑鼠/鍵盤事件交給 Scene 處理。"""
+
+    def __init__(self, scene):
+        super().__init__()
+        self.scene = scene
+
+    def eventFilter(self, obj, ev):
+        t = ev.type()
+        left = getattr(ev, "button", lambda: None)() == Qt.LeftButton
+        if t == QEvent.MouseButtonPress and left:
+            return self.scene.qt_press(ev)
+        if t == QEvent.MouseMove:
+            return self.scene.qt_move(ev)
+        if t == QEvent.MouseButtonRelease and left:
+            return self.scene.qt_release(ev)
+        if t in (QEvent.KeyPress, QEvent.KeyRelease):
+            key = ev.text().lower()
+            if key in ("x", "y", "z") and not ev.isAutoRepeat():
+                (self.scene._keys.add if t == QEvent.KeyPress else self.scene._keys.discard)(key)
+        return False
+
+
 class Scene:
     def __init__(self, parent=None):
         self.plotter = QtInteractor(parent)
@@ -40,12 +64,9 @@ class Scene:
         self._press = None
         self.locked = None  # 鎖定的工作平面 dict(origin/xdir/normal)
         self.lock_id = None  # 若鎖定的是參考面,其編號
-        it = self.plotter.iren.interactor
-        self._tag_press = it.AddObserver("LeftButtonPressEvent", self._on_press, 10.0)
-        it.AddObserver("LeftButtonReleaseEvent", self._on_release, 10.0)
-        it.AddObserver("MouseMoveEvent", self._on_move, 10.0)
-        it.AddObserver("KeyPressEvent", lambda o, e: self._keys.add(o.GetKeySym().lower()), 10.0)
-        it.AddObserver("KeyReleaseEvent", lambda o, e: self._keys.discard(o.GetKeySym().lower()), 10.0)
+        # 滑鼠/鍵盤改由 Qt 事件過濾器處理(VTK 的放開事件在部分版本不會送到觀察者)
+        self._filter = _MouseFilter(self)
+        self.plotter.installEventFilter(self._filter)
         # 移動模式:on_move(body_index, (dx, dy, dz)) 於放開滑鼠時回呼
         self.on_move = None
         self._keys: set[str] = set()
@@ -107,30 +128,39 @@ class Scene:
         w = r.GetWorldPoint()
         return np.array(w[:3]) / w[3]
 
-    def _on_press(self, obj, _evt):
-        self._press = obj.GetEventPosition()
-        if self.mode != "move":
-            return
-        x, y = self._press
+    def _disp(self, ev):
+        """Qt 事件座標 -> VTK 顯示座標(裝置像素,原點在左下)。"""
+        w = self.plotter
+        scale = w.devicePixelRatioF()
+        return round(ev.x() * scale), round((w.height() - ev.y() - 1) * scale)
+
+    def _pick_at(self, x, y):
         picker = vtk.vtkCellPicker()
         picker.SetTolerance(0.005)
         if not picker.Pick(x, y, 0, self.plotter.renderer):
-            return
-        p = np.array(picker.GetPickPosition())
-        body = nearest_body(self._meshes, p)
+            return None
+        return np.array(picker.GetPickPosition())
+
+    def qt_press(self, ev) -> bool:
+        """回傳 True 表示事件已處理(不再交給 VTK 旋轉視角)。"""
+        self._press = self._disp(ev)
+        if self.mode != "move":
+            return False
+        p = self._pick_at(*self._press)
+        body = None if p is None else nearest_body(self._meshes, p)
         if body is None:
-            return
+            return False
         r = self.plotter.renderer
         r.SetWorldPoint(*p, 1.0)
         r.WorldToDisplay()
         self._drag = (body, p, r.GetDisplayPoint()[2], np.zeros(3))
-        obj.GetCommand(self._tag_press).SetAbortFlag(1)  # 不要同時旋轉視角
+        return True
 
-    def _on_move(self, obj, _evt):
+    def qt_move(self, ev) -> bool:
         if self._drag is None:
-            return
+            return False
         body, p0, depth, _ = self._drag
-        x, y = obj.GetEventPosition()
+        x, y = self._disp(ev)
         delta = constrain_delta(self._world_at(x, y, depth) - p0, self._keys)
         self._drag = (body, p0, depth, delta)
         for name in (f"body{body}", f"edge{body}"):
@@ -138,7 +168,7 @@ class Scene:
             if actor is not None:
                 actor.SetPosition(*delta)
         self.plotter.render()
-        obj.GetCommand(self._tag_press).SetAbortFlag(0)
+        return True
 
     def _finish_drag(self):
         body, _, _, delta = self._drag
@@ -149,23 +179,22 @@ class Scene:
         else:
             self.plotter.render()
 
-    def _on_release(self, obj, _evt):
+    def qt_release(self, ev) -> bool:
         if self._drag is not None:
             self._press = None
             self._finish_drag()
-            return
-        if self.mode in ("off", "move") or self._press is None:
-            return
-        x, y = obj.GetEventPosition()
+            return True
+        if self.mode not in ("edge", "face") or self._press is None:
+            return False
+        x, y = self._disp(ev)
         px, py = self._press
         self._press = None
         if abs(x - px) > 3 or abs(y - py) > 3:  # 拖曳(旋轉視角)不算點選
-            return
-        picker = vtk.vtkCellPicker()
-        picker.SetTolerance(0.005)
-        if not picker.Pick(x, y, 0, self.plotter.renderer):
-            return
-        self.pick_point(picker.GetPickPosition())
+            return False
+        p = self._pick_at(x, y)
+        if p is not None:
+            self.pick_point(p)
+        return False
 
     def pick_point(self, p) -> None:
         """在 3D 位置 p 選取(依目前模式選最近的邊或面,再次點擊同一個則取消)。"""
