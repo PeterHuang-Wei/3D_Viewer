@@ -25,6 +25,11 @@ def test_click_selects_face():
         app.processEvents()
         time.sleep(0.02)
     pl, r = w.scene.plotter, w.scene.plotter.renderer
+    w.scene.set_view("等角視")
+    pl.render()
+    for _ in range(10):
+        app.processEvents()
+        time.sleep(0.02)
     r.SetWorldPoint(0, 0, 10, 1.0)
     r.WorldToDisplay()
     x, y, _ = r.GetDisplayPoint()
