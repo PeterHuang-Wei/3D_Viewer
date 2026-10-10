@@ -43,10 +43,16 @@ class MainWindow(QMainWindow):
             dock.setWidget(widget)
             self.addDockWidget(Qt.LeftDockWidgetArea, dock)
             docks.append(dock)
+        self.helix_list = QListWidget()                 # 螺旋線路徑清單
+        self.helix_list.itemDoubleClicked.connect(lambda _: self.on_edit_helix())
+        hdock = QDockWidget("螺旋線(雙擊編輯)", self)
+        hdock.setWidget(self.helix_list)
+        self.addDockWidget(Qt.LeftDockWidgetArea, hdock)
         sdock = QDockWidget("草圖(雙擊編輯)", self)
         sdock.setWidget(self.sketch_list)
         self.addDockWidget(Qt.LeftDockWidgetArea, sdock)
         self.tabifyDockWidget(docks[0], sdock)
+        self.tabifyDockWidget(docks[0], hdock)
         docks[0].raise_()
         self._sk = None                                 # 草圖編輯狀態
         self._build_sketch_bar()
@@ -114,6 +120,10 @@ class MainWindow(QMainWindow):
         sk.addAction(self._action("草圖拉伸(實體/切除)...", lambda _=None: self.on_sketch_solid("sketch_extrude")))
         sk.addAction(self._action("草圖旋轉(實體/切除)...", lambda _=None: self.on_sketch_solid("sketch_revolve")))
         sk.addAction(self._action("草圖掃掠(實體/切除)...", self.on_sketch_sweep))
+        sk.addSeparator()
+        sk.addAction(self._action("在鎖定平面建立螺旋線路徑...", self.on_create_helix))
+        sk.addAction(self._action("編輯所選螺旋線...", self.on_edit_helix))
+        sk.addAction(self._action("刪除所選螺旋線", self.on_delete_helix))
         sk.addSeparator()
         sk.addAction(self._action("刪除所選草圖", self.on_delete_sketch))
 
@@ -757,15 +767,16 @@ class MainWindow(QMainWindow):
 
     def on_sketch_sweep(self):
         sketches, bodies = self.doc.sketches, self.doc.bodies
-        if len(sketches) < 2:
-            QMessageBox.information(self, "草圖掃掠", "需要兩個草圖:一個封閉輪廓、一個路徑(相連的線/圓弧)")
+        paths = [f"{i}: {n}" for i, n, _ in sketches] + [f"{i}: {n}" for i, n, _ in self.doc.helices]
+        if not sketches or len(paths) < 2:
+            QMessageBox.information(self, "草圖掃掠", "需要一個封閉輪廓草圖,以及一個路徑(相連的線/圓弧草圖,或螺旋線)")
             return
         items = [f"{i}: {n}" for i, n, _ in sketches]
         title, fields = SCHEMAS["sketch_sweep"]
-        fields = [("profile", "輪廓草圖(封閉)", "combo", items), ("path", "路徑草圖(相連的線/圓弧)", "combo", items)] \
+        fields = [("profile", "輪廓草圖(封閉)", "combo", items), ("path", "路徑(草圖或螺旋線)", "combo", paths)] \
             + list(fields) + [("target", "目標實體(聯集/切除用)", "combo",
                                [f"{b.id}: {b.name}" for b in bodies] or ["(無)"])]
-        v = ask(title, fields, self, initial={"profile": items[-2], "path": items[-1]})
+        v = ask(title, fields, self, initial={"profile": items[0], "path": paths[-1]})
         if not v:
             return
         params = {k: val for k, val in v.items() if k not in ("profile", "path", "target")}
@@ -779,6 +790,40 @@ class MainWindow(QMainWindow):
                 return
             params["target"] = int(v["target"].split(":")[0])
         self._run(lambda: self.doc.add_feature("sketch_sweep", params))
+
+    def on_create_helix(self):
+        if not self.wp:
+            QMessageBox.information(self, "螺旋線", "請先鎖定平面(F3):軸線為該平面法向,起點在平面原點 + 半徑 × X 軸")
+            return
+        title, fields = SCHEMAS["helix"]
+        v = ask(title, fields, self)
+        if v:
+            params = {**v, "wp": self.wp}
+            if self.wp_id is not None:
+                params["plane_id"] = self.wp_id
+            self._run(lambda: self.doc.add_feature("helix", params))
+
+    def _selected_helix(self):
+        r = self.helix_list.currentRow()
+        if r < 0 or r >= len(self.doc.helices):
+            QMessageBox.information(self, "螺旋線", "請先在「螺旋線」清單選取一個螺旋線")
+            return None
+        return self.doc.helices[r][0]
+
+    def on_edit_helix(self):
+        hid = self._selected_helix()
+        if hid is None:
+            return
+        k = next(i for i, f in enumerate(self.doc.features) if f.kind == "helix" and hid in f.out_ids)
+        title, fields = SCHEMAS["helix"]
+        v = ask("編輯:" + title, fields, self, initial=self.doc.features[k].params)
+        if v:
+            self._run(lambda: self.doc.edit_feature(k, v))
+
+    def on_delete_helix(self):
+        hid = self._selected_helix()
+        if hid is not None:
+            self._run(lambda: self.doc.add_feature("delete", {"body": hid}))
 
     def on_delete_sketch(self):
         r = self.sketch_list.currentRow()
@@ -809,6 +854,8 @@ class MainWindow(QMainWindow):
         self.scene.refresh(self.doc, reset_camera and bool(self.doc.bodies))
         self.tree.clear()
         self.tree.addItems([f"{b.id}: {b.name}" for b in self.doc.bodies])
+        self.helix_list.clear()
+        self.helix_list.addItems([f"{i}: {n}" for i, n, _ in self.doc.helices])
         self.sketch_list.clear()
         self.sketch_list.addItems([f"{i}: {n}" for i, n, _ in self.doc.sketches])
         self.planes_list.clear()

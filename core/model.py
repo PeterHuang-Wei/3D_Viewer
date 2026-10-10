@@ -7,6 +7,7 @@ import cadquery as cq
 
 from .io_step import export_step, shapes_to_step_text
 from . import features as F
+from . import paths as PA
 from .ops import CREATORS, MODIFIERS, LABELS, PLACEABLE, sketch_solid, sweep_solid
 
 FORMAT_VERSION = 1
@@ -77,6 +78,12 @@ class Document:
         return [(i, n, s) for i, (n, s) in last.items() if isinstance(s, dict) and "origin" in s]
 
     @property
+    def helices(self) -> list[tuple[int, str, dict]]:
+        """目前的螺旋線路徑 [(編號, 名稱, {"helix", "wp"})]。"""
+        last = self.states[-1] if self.states else {}
+        return [(i, n, s) for i, (n, s) in last.items() if isinstance(s, dict) and "helix" in s]
+
+    @property
     def sketches(self) -> list[tuple[int, str, dict]]:
         """目前的草圖 [(編號, 名稱, {"entities", "wp"})]。"""
         last = self.states[-1] if self.states else {}
@@ -99,6 +106,14 @@ class Document:
             name = p.get("name") or f"參考面{feat.out_ids[0]}"
             bodies[feat.out_ids[0]] = (name, F.offset_plane(
                 p["wp"], p["offset"], p.get("rx", 0), p.get("ry", 0)))
+        elif k == "helix":
+            if not p.get("wp"):
+                raise ValueError("螺旋線缺少工作平面")
+            if not feat.out_ids:
+                feat.out_ids = [self._alloc()]
+            h = {key: p[key] for key in ("pitch", "height", "radius", "taper", "left") if key in p}
+            PA.helix_wire(h, p["wp"])                    # 先驗證參數
+            bodies[feat.out_ids[0]] = (p.get("name") or f"螺旋線{feat.out_ids[0]}", {"helix": h, "wp": p["wp"]})
         elif k == "sketch":
             if not p.get("wp"):
                 raise ValueError("草圖缺少工作平面")
@@ -110,8 +125,9 @@ class Document:
         elif k in ("sketch_extrude", "sketch_revolve", "sketch_sweep"):
             def sk_of(key):
                 sk = bodies.get(p[key], (None, None))[1]
-                if not isinstance(sk, dict) or "entities" not in sk:
-                    raise ValueError("找不到草圖")
+                ok = isinstance(sk, dict) and ("entities" in sk or (key == "path" and "helix" in sk))
+                if not ok:
+                    raise ValueError("找不到草圖/路徑")
                 return sk
             shape = sweep_solid(p, sk_of("profile"), sk_of("path")) if k == "sketch_sweep" \
                 else sketch_solid(k, p, sk_of("sketch"))

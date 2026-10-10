@@ -9,6 +9,7 @@ import vtk
 from .mesh import shape_to_mesh, shape_to_edges
 from .sketch_editor import lines_poly
 from core import sketch2d as SK
+from core import paths as PA
 from .picking import EdgeIndex, face_at, nearest_body, constrain_delta
 
 COLORS = ["#8fb8de", "#e0a96d", "#9bc59d", "#c9a0dc", "#d9777a"]
@@ -112,6 +113,7 @@ class Scene:
                 )
         self._draw_planes()
         self._draw_sketches()
+        self._draw_helices()
         self._draw_lock(render=False)
         if reset_camera:
             self.set_view("等角視")
@@ -274,7 +276,7 @@ class Scene:
 
     def _draw_sketches(self) -> None:
         """畫出文件中所有草圖(橘色線)。"""
-        for name in [n for n in self.plotter.renderer.actors if str(n).startswith("sketchobj")]:
+        for name in [n for n in self.plotter.renderer.actors if str(n).startswith(("sketchobj", "helixobj"))]:
             self.plotter.remove_actor(name, render=False)
         if self._doc is None:
             return
@@ -283,6 +285,17 @@ class Scene:
                 self.plotter.add_mesh(lines_poly(SK.polylines_global(sk["entities"], sk["wp"])),
                                       color="#ff8c00", line_width=2.5, name=f"sketchobj{sid}",
                                       pickable=False)
+
+    def _draw_helices(self) -> None:
+        if self._doc is None:
+            return
+        for hid, _, hx in self._doc.helices:
+            try:
+                polys = PA.polylines(PA.helix_wire(hx["helix"], hx["wp"]))
+            except ValueError:
+                continue
+            self.plotter.add_mesh(lines_poly(polys), color="#ff4fd8", line_width=2.5,
+                                  name=f"helixobj{hid}", pickable=False)
 
     def _draw_planes(self) -> None:
         """畫出所有參考面(被鎖定的那個由 _draw_lock 以青色畫)。"""

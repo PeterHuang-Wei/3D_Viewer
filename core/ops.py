@@ -4,13 +4,14 @@ import cadquery as cq
 from . import features as F
 from . import thread as T
 from . import sketch2d as SK
+from . import paths as PA
 from .io_step import step_text_to_shapes
 
 LABELS = {
     "box": "方塊", "cylinder": "圓柱", "sphere": "球", "cone": "圓錐", "torus": "環",
     "extrude": "快速拉伸", "revolve": "快速旋轉", "rod": "外螺紋螺桿",
     "thread_tool": "內螺紋工具體", "step": "匯入 STEP",
-    "translate": "平移", "sketch": "草圖", "sketch_extrude": "草圖拉伸", "sketch_revolve": "草圖旋轉", "sketch_sweep": "草圖掃掠", "refplane": "參考面", "scale": "縮放", "rotate": "旋轉", "fillet": "圓角", "chamfer": "倒角",
+    "translate": "平移", "sketch": "草圖", "sketch_extrude": "草圖拉伸", "sketch_revolve": "草圖旋轉", "sketch_sweep": "草圖掃掠", "helix": "螺旋線路徑", "refplane": "參考面", "scale": "縮放", "rotate": "旋轉", "fillet": "圓角", "chamfer": "倒角",
     "thread_hole": "螺紋孔", "boolean": "布林運算", "delete": "刪除",
 }
 
@@ -96,16 +97,20 @@ def sketch_solid(kind: str, p: dict, sk: dict) -> cq.Shape:
 
 
 def sweep_solid(p: dict, profile: dict, path: dict) -> cq.Shape:
-    """輪廓草圖沿路徑草圖掃掠。p["align"]=True 時把輪廓座標系移到路徑起點、並使其法向與路徑相切。"""
-    wire = SK.path_wire(path["entities"], path["wp"])
-    first = wire.Edges()[0]
-    start, tangent = wire.startPoint(), first.tangentAt(0)
+    """輪廓草圖沿路徑(草圖線/圓弧,或螺旋線)掃掠。
+    align=True 時把輪廓座標系移到路徑起點:一般路徑讓輪廓法向沿路徑切線;螺旋線則讓輪廓平面通過螺旋軸(X=徑向,Y=軸向)。"""
+    is_helix = "helix" in path
+    wire = PA.helix_wire(path["helix"], path["wp"]) if is_helix else SK.path_wire(path["entities"], path["wp"])
     if p.get("align", False):
-        px = F.plane_from_dict(profile["wp"]).xDir
-        px = px - tangent * px.dot(tangent)                     # 取輪廓 X 軸在垂直面上的投影
-        if px.Length < 1e-9:
-            px = cq.Plane(origin=(0, 0, 0), normal=tangent.toTuple()).xDir
-        place = cq.Plane(origin=start.toTuple(), xDir=px.toTuple(), normal=tangent.toTuple()).rG
+        if is_helix:
+            place = PA.helix_frame(wire, path["wp"]).rG
+        else:
+            start, tangent = wire.startPoint(), wire.Edges()[0].tangentAt(0)
+            px = F.plane_from_dict(profile["wp"]).xDir
+            px = px - tangent * px.dot(tangent)                 # 取輪廓 X 軸在垂直面上的投影
+            if px.Length < 1e-9:
+                px = cq.Plane(origin=(0, 0, 0), normal=tangent.toTuple()).xDir
+            place = cq.Plane(origin=start.toTuple(), xDir=px.toTuple(), normal=tangent.toTuple()).rG
     else:
         place = F.plane_from_dict(profile["wp"]).rG
     solids = []
