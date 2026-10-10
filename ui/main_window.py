@@ -5,7 +5,7 @@ from PyQt5.QtCore import Qt, QSettings
 from PyQt5.QtWidgets import (
     QMainWindow, QAction, QActionGroup, QFileDialog, QMessageBox, QListWidget,
     QDockWidget, QLabel, QToolBar, QLineEdit, QCheckBox, QDoubleSpinBox,
-    QInputDialog, QPushButton, QWidget, QVBoxLayout,
+    QInputDialog, QPushButton, QWidget, QVBoxLayout, QPlainTextEdit, QApplication,
 )
 
 from core import features as F
@@ -14,6 +14,8 @@ from core.model import Document, STL_QUALITY
 from core.ops import PLACEABLE
 from viewer.quality import QUALITY, DEFAULT as DEFAULT_QUALITY
 from viewer.scene import Scene, VIEWS
+from core import measure as MS
+from viewer.measure_tool import TOOLS as MS_TOOLS
 from viewer.sketch_editor import SketchEditor, TOOLS as SK_TOOLS, CONSTRAINT_TOOLS
 from .dialogs import ask
 from .schemas import SCHEMAS
@@ -55,6 +57,7 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(docks[0], sdock)
         self.tabifyDockWidget(docks[0], hdock)
         docks[0].raise_()
+        self._build_measure_dock()
         self._sk = None                                 # 草圖編輯狀態
         self._build_sketch_bar()
 
@@ -169,6 +172,14 @@ class MainWindow(QMainWindow):
         pl.addAction(self._action("以鎖定平面建立參考面(平行/傾斜)...", self.on_create_refplane))
         pl.addAction(self._action("移動/編輯所選參考面...", self.on_edit_refplane))
         pl.addAction(self._action("刪除所選參考面", self.on_delete_refplane))
+
+        ms = bar.addMenu("量測(&U)")
+        for tool, (label, _, _) in MS_TOOLS.items():
+            ms.addAction(self._action(label, lambda _, t=tool: self.on_measure(t)))
+        ms.addSeparator()
+        ms.addAction(self._action("所選實體的屬性(體積/表面積/質心)...", self.on_body_props))
+        ms.addAction(self._action("清除畫面上的量測標註", self.on_measure_clear))
+        ms.addAction(self._action("結束量測", self.on_measure_exit))
 
         v = bar.addMenu("檢視(&V)")
         for name in VIEWS:
@@ -528,6 +539,64 @@ class MainWindow(QMainWindow):
         if v:
             self._run(lambda: self.doc.add_feature(kind, {**v, "body": body.id, "edges": edges}))
 
+    # --- 量測 ---
+    def _build_measure_dock(self):
+        box = QWidget()
+        lay = QVBoxLayout(box)
+        self.measure_text = QPlainTextEdit()
+        self.measure_text.setReadOnly(True)
+        lay.addWidget(self.measure_text)
+        for text, slot in (("複製全部結果", self.on_measure_copy), ("清除結果與標註", self.on_measure_clear_all)):
+            b = QPushButton(text)
+            b.clicked.connect(slot)
+            lay.addWidget(b)
+        self.measure_dock = QDockWidget("量測結果", self)
+        self.measure_dock.setWidget(box)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.measure_dock)
+        self.measure_dock.hide()
+        self.scene.measure.on_result = lambda t: self.measure_text.appendPlainText(t + "\n")
+        self.scene.measure.status = lambda m: self.statusBar().showMessage(m)
+
+    def on_measure(self, tool):
+        if not self.doc.bodies:
+            QMessageBox.information(self, "量測", "目前沒有可量測的實體")
+            return
+        self.scene.set_mode("measure")
+        self.scene.measure.set_tool(tool)
+        self.measure_dock.show()
+
+    def on_measure_exit(self):
+        self.scene.set_mode("off")
+        self.scene.measure.cancel()
+        self.measure_dock.hide()
+
+    def on_measure_clear(self):
+        self.scene.measure.clear()
+
+    def on_measure_clear_all(self):
+        self.measure_text.clear()
+        self.scene.measure.clear()
+
+    def on_measure_copy(self):
+        QApplication.clipboard().setText(self.measure_text.toPlainText())
+        self.statusBar().showMessage("已複製量測結果")
+
+    def on_body_props(self):
+        bid = self._current_id()
+        if bid is None:
+            return
+        body = next(b for b in self.doc.bodies if b.id == bid)
+        p = MS.body_properties(body.shape)
+        c = p["center"]
+        text = (f"實體:{body.name}\n體積:{p['volume']:.4f} mm³\n表面積:{p['area']:.4f} mm²\n"
+                f"質心:({c.x:.4f}, {c.y:.4f}, {c.z:.4f})\n"
+                f"外型尺寸(X×Y×Z):{p['size'][0]:.4f} × {p['size'][1]:.4f} × {p['size'][2]:.4f} mm\n"
+                f"邊界框:({p['min'][0]:.3f}, {p['min'][1]:.3f}, {p['min'][2]:.3f}) ~ "
+                f"({p['max'][0]:.3f}, {p['max'][1]:.3f}, {p['max'][2]:.3f})")
+        self.measure_text.appendPlainText(text + "\n")
+        self.measure_dock.show()
+        QMessageBox.information(self, "實體屬性", text)
+
     # --- 草圖 ---
     def _build_sketch_bar(self):
         bar = QToolBar("草圖工具", self)
@@ -862,6 +931,7 @@ class MainWindow(QMainWindow):
         self.scene.refresh(self.doc, reset_camera=False)
 
     def _update(self, reset_camera=True):
+        self.scene.measure.clear()                         # 模型改變後舊的量測標註已失效
         if self.wp_id is not None:                         # 鎖定的參考面被移動/刪除時同步
             plane = next((p for p in self.doc.planes if p[0] == self.wp_id), None)
             if plane:

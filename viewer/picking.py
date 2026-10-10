@@ -24,7 +24,8 @@ class EdgeIndex:
         self.b = np.vstack(b) if b else np.zeros((0, 3))
         self.ids = np.asarray(ids, dtype=int)
 
-    def nearest(self, p) -> int | None:
+    def nearest_info(self, p):
+        """(邊編號, 距離, 邊上最近點);沒有邊則 None。"""
         if not len(self.ids):
             return None
         ab = self.b - self.a
@@ -32,7 +33,12 @@ class EdgeIndex:
             np.einsum("ij,ij->i", ab, ab), 1e-12)
         proj = self.a + np.clip(t, 0, 1)[:, None] * ab
         d = np.linalg.norm(proj - p, axis=1)
-        return int(self.ids[np.argmin(d)])
+        k = int(np.argmin(d))
+        return int(self.ids[k]), float(d[k]), proj[k]
+
+    def nearest(self, p) -> int | None:
+        info = self.nearest_info(p)
+        return None if info is None else info[0]
 
 
 def face_at(mesh: pv.PolyData, p) -> int | None:

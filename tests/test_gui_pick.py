@@ -235,3 +235,49 @@ def test_display_quality_menu():
         n[name] = actor.GetMapper().GetInput().GetNumberOfCells()
     assert n["低"] < n["超高"]
     w.on_quality("高")
+
+
+def test_measure_tools():
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow()
+    w.resize(1300, 850)
+    w.show()
+    w.doc.add_feature("box", {"x": 40, "y": 30, "z": 20})
+    w._update()
+
+    def pump(n=8):
+        for _ in range(n):
+            app.processEvents()
+            time.sleep(0.02)
+
+    pump(30)
+    w.scene.go_home()
+    pump(10)
+    pl, r = w.scene.plotter, w.scene.plotter.renderer
+
+    def click(P):
+        r.SetWorldPoint(*P, 1.0)
+        r.WorldToDisplay()
+        x, y, _ = r.GetDisplayPoint()
+        QTest.mouseClick(pl, Qt.LeftButton, Qt.NoModifier, QPoint(int(round(x)), int(round(pl.height() - y))))
+        pump(4)
+
+    w.on_measure("point")                              # 兩個可見頂點:對角線 50
+    click((20, -15, 10))
+    click((-20, 15, 10))
+    assert "點到點距離 = 50 mm" in w.measure_text.toPlainText()
+    w.on_measure("face")
+    click((0, 0, 10))
+    assert "面積 = 1200 mm²" in w.measure_text.toPlainText()
+    w.on_measure("angle")                              # 頂面與右面(+X)
+    click((5, 5, 10))
+    click((20, 2, 3))
+    assert "角度(面-面) = 90°" in w.measure_text.toPlainText()
+    w.on_measure("edge")
+    click((20, -15, 0))
+    assert "長度 = 20 mm" in w.measure_text.toPlainText()
+    assert len(w.scene.measure.items) == 4
+    w.on_measure_clear()
+    assert w.scene.measure.items == []
+    w.on_measure_exit()
+    assert w.scene.mode == "off"

@@ -7,6 +7,7 @@ from core.model import Document
 import vtk
 
 from .mesh import shape_to_mesh, shape_to_edges
+from .measure_tool import MeasureTool
 from .quality import QUALITY, DEFAULT as DEFAULT_QUALITY
 from .sketch_editor import lines_poly
 from .viewcube import ViewCube
@@ -84,6 +85,7 @@ class Scene:
         self._filter = _MouseFilter(self)
         self.plotter.installEventFilter(self._filter)
         self.cube = ViewCube(self)
+        self.measure = MeasureTool(self)
         self._cube_press = False
         # 移動模式:on_move(body_index, (dx, dy, dz)) 於放開滑鼠時回呼
         self.on_move = None
@@ -122,6 +124,7 @@ class Scene:
         self._draw_sketches()
         self._draw_helices()
         self._draw_lock(render=False)
+        self.measure.redraw()
         if reset_camera:
             self.set_view("等角視")
 
@@ -158,6 +161,14 @@ class Scene:
         self._draw_selection()
         if notify and self.on_selection:
             self.on_selection()
+
+    def world_per_pixel(self, P, pixels=10) -> float:
+        """在 3D 點 P 的深度上,pixels 個像素對應的世界長度。"""
+        r = self.plotter.renderer
+        r.SetWorldPoint(*P, 1.0)
+        r.WorldToDisplay()
+        x, y, z = r.GetDisplayPoint()
+        return float(np.linalg.norm(self._world_at(x + pixels, y, z) - self._world_at(x, y, z)))
 
     def _world_at(self, x, y, depth):
         r = self.plotter.renderer
@@ -247,7 +258,7 @@ class Scene:
                 self.sketch.click(x, y)
             self._press = None
             return False
-        if self.mode not in ("edge", "face") or self._press is None:
+        if self.mode not in ("edge", "face", "measure") or self._press is None:
             return False
         x, y = self._disp(ev)
         px, py = self._press
@@ -256,7 +267,10 @@ class Scene:
             return False
         p = self._pick_at(x, y)
         if p is not None:
-            self.pick_point(p)
+            if self.mode == "measure":
+                self.measure.click(p)
+            else:
+                self.pick_point(p)
         return False
 
     def pick_point(self, p) -> None:
