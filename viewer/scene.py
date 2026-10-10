@@ -8,6 +8,7 @@ import vtk
 
 from .mesh import shape_to_mesh, shape_to_edges
 from .sketch_editor import lines_poly
+from .viewcube import ViewCube
 from core import sketch2d as SK
 from core import paths as PA
 from .picking import EdgeIndex, face_at, nearest_body, constrain_delta
@@ -38,6 +39,8 @@ class _MouseFilter(QObject):
         left = getattr(ev, "button", lambda: None)() == Qt.LeftButton
         if t == QEvent.MouseButtonPress and left:
             return self.scene.qt_press(ev)
+        if t == QEvent.Resize:
+            self.scene.cube.layout()
         right = getattr(ev, "button", lambda: None)() == Qt.RightButton
         if right and t == QEvent.MouseButtonPress:
             self.scene._rpress = self.scene._disp(ev)
@@ -58,7 +61,6 @@ class Scene:
     def __init__(self, parent=None):
         self.plotter = QtInteractor(parent)
         self.plotter.set_background("#2b2f36", top="#4a5160")
-        self.plotter.add_axes()
         self.wireframe = False
         self.show_edges = True
         # 選取狀態:模式 off/edge/face;只允許選同一個實體內的邊或面
@@ -78,6 +80,8 @@ class Scene:
         # 滑鼠/鍵盤改由 Qt 事件過濾器處理(VTK 的放開事件在部分版本不會送到觀察者)
         self._filter = _MouseFilter(self)
         self.plotter.installEventFilter(self._filter)
+        self.cube = ViewCube(self)
+        self._cube_press = False
         # 移動模式:on_move(body_index, (dx, dy, dz)) 於放開滑鼠時回呼
         self.on_move = None
         self._keys: set[str] = set()
@@ -91,7 +95,6 @@ class Scene:
         self._doc = doc
         self.clear_selection(notify=False)
         self.plotter.clear()
-        self.plotter.add_axes()
         self._meshes, self._edge_idx, self._edge_polys = [], [], []
         for i, body in enumerate(doc.bodies):
             mesh = shape_to_mesh(body.shape)
@@ -117,6 +120,15 @@ class Scene:
         self._draw_lock(render=False)
         if reset_camera:
             self.set_view("等角視")
+
+    def set_view_dir(self, direction, up) -> None:
+        self.plotter.view_vector(tuple(direction), viewup=tuple(up))
+        self.plotter.reset_camera()
+        self.plotter.render()
+
+    def go_home(self) -> None:
+        """回到初始視角:等角視並顯示全部。"""
+        self.set_view("等角視")
 
     def set_view(self, name: str) -> None:
         direction, up = VIEWS[name]
@@ -164,6 +176,9 @@ class Scene:
 
     def qt_press(self, ev) -> bool:
         """回傳 True 表示事件已處理(不再交給 VTK 旋轉視角)。"""
+        self._cube_press = self.cube.contains(ev.x(), ev.y())
+        if self._cube_press:
+            return True                       # 點在視角方塊上:不要旋轉視角
         self._press = self._disp(ev)
         if self.mode != "move":
             return False
@@ -204,6 +219,11 @@ class Scene:
             self.plotter.render()
 
     def qt_release(self, ev) -> bool:
+        if self._cube_press:
+            self._cube_press = False
+            if self.cube.contains(ev.x(), ev.y()):
+                self.cube.click(ev.x(), ev.y())
+            return True
         if self._drag is not None:
             self._press = None
             self._finish_drag()

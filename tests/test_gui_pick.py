@@ -168,3 +168,55 @@ def test_sketch_constraints_and_dimensions():
     w.on_edit_sketch()
     assert len(w._sk["ed"].constraints) == n and w._sk["ed"].dof() == 0
     w._end_sketch()
+
+
+def test_view_cube_and_home():
+    import numpy as np
+    from viewer.viewcube import classify, view_for_direction
+    # 純計算:面中央=單軸、靠邊=兩軸、靠角=三軸
+    assert classify((0, 0, 1), (0.1, -0.2, 1)) == (0, 0, 1)
+    assert classify((0, 0, 1), (0.9, 0.1, 1)) == (1, 0, 1)
+    assert classify((0, -1, 0), (-0.9, -1, 0.9)) == (-1, -1, 1)
+    assert view_for_direction((0, 0, -1))[1] == (0.0, -1.0, 0.0)
+
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow()
+    w.resize(1200, 800)
+    w.show()
+    w.doc.add_feature("box", {"x": 30, "y": 20, "z": 10})
+    w._update()
+
+    def pump(n=8):
+        for _ in range(n):
+            app.processEvents()
+            time.sleep(0.02)
+
+    pump(30)
+    pl, cube = w.scene.plotter, w.scene.cube
+
+    def cam_dir():
+        c = pl.renderer.GetActiveCamera()
+        v = np.array(c.GetPosition()) - np.array(c.GetFocalPoint())
+        return tuple(np.round(v / np.linalg.norm(v), 2))
+
+    def click_face(n):
+        cube.ren.SetWorldPoint(*n, 1.0)
+        cube.ren.WorldToDisplay()
+        x, y, _ = cube.ren.GetDisplayPoint()
+        QTest.mouseClick(pl, Qt.LeftButton, Qt.NoModifier, QPoint(int(round(x)), int(round(pl.height() - y))))
+        pump()
+
+    for normal, expect in (((0, 0, 1), (0, 0, 1)), ):
+        w.scene.go_home()
+        pump()
+        click_face(normal)
+        assert cam_dir() == expect                      # 點頂面 -> 上視圖
+    for normal, expect in (((0, -1, 0), (0, -1, 0)), ((1, 0, 0), (1, 0, 0))):
+        w.scene.set_view("等角視")
+        pump()
+        # 等角視下看得到的面: 頂(+Z)、前(-Y)、右(+X);點面中心略偏向相機一側以避開邊的判定
+        click_face(tuple(0.9 * v for v in normal))
+        assert cam_dir() == expect
+    QTest.mouseClick(cube.home, Qt.LeftButton)            # HOME 回到初始(等角)視角
+    pump()
+    assert cam_dir() == (0.58, -0.58, 0.58)
