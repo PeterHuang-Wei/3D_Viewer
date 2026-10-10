@@ -220,3 +220,18 @@ def test_view_cube_and_home():
     QTest.mouseClick(cube.home, Qt.LeftButton)            # HOME 回到初始(等角)視角
     pump()
     assert cam_dir() == (0.58, -0.58, 0.58)
+
+
+def test_display_quality_menu():
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow()
+    w.show()
+    w.doc.add_feature("cylinder", {"r": 10, "h": 5})
+    w._update()
+    n = {}
+    for name in ("低", "超高"):
+        w.on_quality(name)
+        actor = w.scene.plotter.renderer.actors["body0"]
+        n[name] = actor.GetMapper().GetInput().GetNumberOfCells()
+    assert n["低"] < n["超高"]
+    w.on_quality("高")

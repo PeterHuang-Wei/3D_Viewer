@@ -7,6 +7,7 @@ from core.model import Document
 import vtk
 
 from .mesh import shape_to_mesh, shape_to_edges
+from .quality import QUALITY, DEFAULT as DEFAULT_QUALITY
 from .sketch_editor import lines_poly
 from .viewcube import ViewCube
 from core import sketch2d as SK
@@ -63,6 +64,8 @@ class Scene:
         self.plotter.set_background("#2b2f36", top="#4a5160")
         self.wireframe = False
         self.show_edges = True
+        self.quality = DEFAULT_QUALITY
+        SK.DISPLAY_SEGMENTS = QUALITY[self.quality]["sketch_segs"]
         # 選取狀態:模式 off/edge/face;只允許選同一個實體內的邊或面
         self.mode = "off"
         self.sel_body = None
@@ -97,8 +100,9 @@ class Scene:
         self.plotter.clear()
         self._meshes, self._edge_idx, self._edge_polys = [], [], []
         for i, body in enumerate(doc.bodies):
-            mesh = shape_to_mesh(body.shape)
-            edges = shape_to_edges(body.shape)
+            q = QUALITY[self.quality]
+            mesh = shape_to_mesh(body.shape, q["tol"], q["ang"])
+            edges = shape_to_edges(body.shape, q["edge_pts"])
             self._meshes.append(mesh)
             self._edge_polys.append(edges)
             self._edge_idx.append(EdgeIndex(edges))
@@ -125,6 +129,15 @@ class Scene:
         self.plotter.view_vector(tuple(direction), viewup=tuple(up))
         self.plotter.reset_camera()
         self.plotter.render()
+
+    def set_quality(self, name: str) -> None:
+        """設定顯示精細度並重新產生畫面(不改變視角)。"""
+        self.quality = name
+        SK.DISPLAY_SEGMENTS = QUALITY[name]["sketch_segs"]
+        if self._doc is not None:
+            self.refresh(self._doc, reset_camera=False)
+        if self.sketch:
+            self.sketch._redraw()
 
     def go_home(self) -> None:
         """回到初始視角:等角視並顯示全部。"""
@@ -311,7 +324,7 @@ class Scene:
             return
         for hid, _, hx in self._doc.helices:
             try:
-                polys = PA.polylines(PA.helix_wire(hx["helix"], hx["wp"]))
+                polys = PA.polylines(PA.helix_wire(hx["helix"], hx["wp"]), max(240, QUALITY[self.quality]["edge_pts"] * 4))
             except ValueError:
                 continue
             self.plotter.add_mesh(lines_poly(polys), color="#ff4fd8", line_width=2.5,

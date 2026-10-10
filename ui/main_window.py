@@ -1,7 +1,7 @@
 """主視窗(繁體中文介面)。"""
 import os
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QSettings
 from PyQt5.QtWidgets import (
     QMainWindow, QAction, QActionGroup, QFileDialog, QMessageBox, QListWidget,
     QDockWidget, QLabel, QToolBar, QLineEdit, QCheckBox, QDoubleSpinBox,
@@ -12,6 +12,7 @@ from core import features as F
 from core import sketch_solver as K
 from core.model import Document, STL_QUALITY
 from core.ops import PLACEABLE
+from viewer.quality import QUALITY, DEFAULT as DEFAULT_QUALITY
 from viewer.scene import Scene, VIEWS
 from viewer.sketch_editor import SketchEditor, TOOLS as SK_TOOLS, CONSTRAINT_TOOLS
 from .dialogs import ask
@@ -69,6 +70,11 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.lock_label)
         self.scene.on_selection = self._show_selection
         self.scene.on_move = self._on_drag_move
+        self.quality_actions = {}
+        saved = QSettings("3DViewer", "3DViewer").value("quality", DEFAULT_QUALITY)
+        if saved in QUALITY:
+            self.scene.quality = saved
+            self.scene.set_quality(saved)
         self._build_menus()
         self._update()
 
@@ -170,6 +176,14 @@ class MainWindow(QMainWindow):
         v.addSeparator()
         v.addAction(self._action("線框模式", self.on_wireframe, checkable=True))
         v.addAction(self._action("顯示邊線", self.on_edges, checkable=True, checked=True))
+        qm = v.addMenu("顯示精細度(圓/曲面)")
+        qgrp = QActionGroup(self)
+        for name, q in QUALITY.items():
+            act = self._action(f"{name}(弦高誤差 {q['tol']} mm)", lambda _, n=name: self.on_quality(n),
+                               checkable=True, checked=(name == self.scene.quality))
+            qgrp.addAction(act)
+            qm.addAction(act)
+            self.quality_actions[name] = act
 
     # --- 檔案 ---
     def _confirm_discard(self) -> bool:
@@ -834,6 +848,11 @@ class MainWindow(QMainWindow):
         self._run(lambda: self.doc.add_feature("delete", {"body": sid}))
 
     # --- 檢視 ---
+    def on_quality(self, name):
+        self.scene.set_quality(name)
+        QSettings("3DViewer", "3DViewer").setValue("quality", name)
+        self.statusBar().showMessage(f"顯示精細度:{name}(只影響畫面,不影響模型與匯出)")
+
     def on_wireframe(self, on):
         self.scene.wireframe = on
         self.scene.refresh(self.doc, reset_camera=False)

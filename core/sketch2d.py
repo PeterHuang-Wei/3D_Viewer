@@ -103,6 +103,9 @@ def is_closed_by_itself(e) -> bool:
     return e["t"] == "circle" or (e["t"] == "arc" and abs(span(e) - 360.0) < 1e-7)
 
 
+DISPLAY_SEGMENTS = 128      # 顯示用:整圓的線段數(由主程式依顯示精細度設定)
+
+
 def sample(e, n: int = 48):
     """離散成折線點(依圖元自然方向)。"""
     if e["t"] == "line":
@@ -454,13 +457,14 @@ def _fuse(solids):
     return res.clean() if len(solids) > 1 else res
 
 
-def polylines_global(entities, wp):
-    """供顯示用:每個圖元離散成 3D 折線點(numpy 陣列)。"""
+def polylines_global(entities, wp, segments=None):
+    """供顯示用:每個圖元離散成 3D 折線點(numpy 陣列);整圓以 segments(預設 DISPLAY_SEGMENTS)段近似。"""
     import numpy as np
     from .features import plane_from_dict
     pl = plane_from_dict(wp)
     o, x, y = (np.array(v.toTuple()) for v in (pl.origin, pl.xDir, pl.yDir))
-    return [np.array([o + u * x + v * y for u, v in sample(e)]) for e in entities]
+    n = segments or DISPLAY_SEGMENTS
+    return [np.array([o + u * x + v * y for u, v in sample(e, n)]) for e in entities]
 
 
 # --- 掃掠 ---
