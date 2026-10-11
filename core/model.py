@@ -9,7 +9,8 @@ from .io_step import export_step, shapes_to_step_text
 from . import features as F
 from . import paths as PA
 from . import measure as MS
-from .ops import CREATORS, MODIFIERS, LABELS, PLACEABLE, sketch_solid, sweep_solid
+from .expr import evaluate_all, resolve_params
+from .ops import CREATORS, MODIFIERS, LABELS, PLACEABLE, sketch_solid, sweep_solid, loft_solid
 
 FORMAT_VERSION = 1
 
@@ -79,6 +80,8 @@ class Document:
         self._next_id = 1
         self._undo, self._redo = [], []
         self.rollback: int | None = None    # 回溯點:只計算到此特徵(含);None = 最新
+        self.variables: dict = {}           # 變數與公式 {名稱: 數字或 "=算式"},依序求值
+        self._values: dict = {}             # 目前求得的變數值
 
     # --- 目前實體 ---
     @property
@@ -128,7 +131,7 @@ class Document:
 
     # --- 重算 ---
     def _apply(self, feat: Feature, bodies: dict) -> None:
-        p, k = feat.params, feat.kind
+        p, k = resolve_params(feat.params, self._values), feat.kind
         pid = p.get("plane_id")                    # 綁定參考面時,以參考面目前位置為準
         if pid in bodies and isinstance(bodies[pid][1], dict) and "origin" in bodies[pid][1]:
             p = {**p, "wp": bodies[pid][1]}
@@ -169,15 +172,18 @@ class Document:
             name = p.get("name") or f"草圖{feat.out_ids[0]}"
             bodies[feat.out_ids[0]] = (name, {"entities": p["entities"], "wp": p["wp"],
                                               "constraints": p.get("constraints", [])})
-        elif k in ("sketch_extrude", "sketch_revolve", "sketch_sweep"):
-            def sk_of(key):
-                sk = bodies.get(p[key], (None, None))[1]
-                ok = isinstance(sk, dict) and ("entities" in sk or (key == "path" and "helix" in sk))
-                if not ok:
+        elif k in ("sketch_extrude", "sketch_revolve", "sketch_sweep", "sketch_loft"):
+            def sk_by_id(i, allow_helix=False):
+                sk = bodies.get(i, (None, None))[1]
+                if not (isinstance(sk, dict) and ("entities" in sk or (allow_helix and "helix" in sk))):
                     raise ValueError("找不到草圖/路徑")
                 return sk
-            shape = sweep_solid(p, sk_of("profile"), sk_of("path")) if k == "sketch_sweep" \
-                else sketch_solid(k, p, sk_of("sketch"))
+            if k == "sketch_sweep":
+                shape = sweep_solid(p, sk_by_id(p["profile"]), sk_by_id(p["path"], True))
+            elif k == "sketch_loft":
+                shape = loft_solid(p, [sk_by_id(i) for i in p["profiles"]])
+            else:
+                shape = sketch_solid(k, p, sk_by_id(p["sketch"]))
             op = p.get("op", "新實體")
             if op == "新實體":
                 if not feat.out_ids:
@@ -232,6 +238,10 @@ class Document:
     def recompute(self, start: int = 0) -> None:
         """從第 start 個特徵起重算;失敗的特徵會被標記並略過。"""
         del self.states[start:]
+        try:
+            self._values = evaluate_all(self.variables)
+        except ValueError:
+            self._values = {}
         for k, feat in enumerate(self.features[start:], start):
             base = dict(self.states[-1]) if self.states else {}
             work = dict(base)
@@ -252,7 +262,7 @@ class Document:
 
     # --- 復原 / 重做 ---
     def _snapshot(self):
-        return copy.deepcopy(self.features), list(self.states), self.rollback
+        return copy.deepcopy(self.features), list(self.states), self.rollback, dict(self.variables)
 
     def _push_undo(self):
         self._undo.append(self._snapshot())
@@ -261,6 +271,11 @@ class Document:
 
     def _restore(self, snap):
         self.features, self.states, self.rollback = copy.deepcopy(snap[0]), list(snap[1]), snap[2]
+        self.variables = dict(snap[3])
+        try:
+            self._values = evaluate_all(self.variables)
+        except ValueError:
+            self._values = {}
         self.dirty = True
 
     def can_undo(self): return bool(self._undo)
@@ -308,6 +323,17 @@ class Document:
         if self.rollback is not None and index <= self.rollback:
             self.rollback = self.rollback - 1 if self.rollback > 0 else None
         self.recompute(index)
+
+    def set_variables(self, variables: dict) -> str | None:
+        """設定變數與公式並全部重算;算式無效則不改變並回傳錯誤訊息。"""
+        try:
+            evaluate_all(variables)
+        except ValueError as e:
+            return str(e)
+        self._push_undo()
+        self.variables = dict(variables)
+        self.recompute(0)
+        return None
 
     def set_suppressed(self, index: int, on: bool) -> None:
         """抑制 / 取消抑制特徵(抑制後重算時略過,依賴它的特徵會標示錯誤)。"""
@@ -363,7 +389,8 @@ class Document:
 
     def save_project(self, path: str) -> None:
         data = {"app": "3D Viewer", "version": FORMAT_VERSION,
-                "features": [f.to_dict() for f in self.features], "rollback": self.rollback}
+                "features": [f.to_dict() for f in self.features], "rollback": self.rollback,
+                "variables": self.variables}
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
         self.path, self.dirty = path, False
@@ -376,6 +403,7 @@ class Document:
         self.clear()
         self.features = [Feature.from_dict(d) for d in data["features"]]
         self.rollback = data.get("rollback")
+        self.variables = dict(data.get("variables", {}))
         ids = [i for f in self.features for i in f.out_ids]
         self._next_id = max(ids, default=0) + 1
         self.recompute(0)

@@ -53,3 +53,20 @@ def test_sweep_cut_and_errors():
     assert err and "連續" in err
     with pytest.raises(ValueError):
         S.ordered_chain([S.circle((0, 0), 1)])
+
+
+def test_loft():
+    import math
+    d = Document()
+    up = {"origin": [0, 0, 10], "xdir": [1, 0, 0], "normal": [0, 0, 1]}
+    a = sketch(d, [S.circle((0, 0), 5)], XY)
+    b = sketch(d, S.rectangle((-4, -4), (4, 4)), up)
+    assert d.add_feature("sketch_loft", {"profiles": [a, b], "ruled": False, "op": "新實體"}) is None
+    v = d.bodies[0].shape.Volume()
+    assert math.pi * 25 * 10 * 0.8 < v < 64 * 10 * 1.4
+    c = sketch(d, [S.circle((0, 0), 2)], {"origin": [0, 0, 20], "xdir": [1, 0, 0], "normal": [0, 0, 1]})
+    assert d.add_feature("sketch_loft", {"profiles": [a, c], "ruled": True, "op": "新實體"}) is None
+    frustum = math.pi * 10 * (25 + 10 + 4) / 3 * 2                      # 高 20 的圓台(兩圓 R5 r2)
+    assert abs(d.bodies[1].shape.Volume() - math.pi * 20 * (25 + 10 + 4) / 3) < 1.0
+    assert d.add_feature("sketch_loft", {"profiles": [a], "op": "新實體"}) is not None
+    assert d.add_feature("sketch_loft", {"profiles": [a, 999], "op": "新實體"}) is not None

@@ -11,7 +11,7 @@ LABELS = {
     "box": "方塊", "cylinder": "圓柱", "sphere": "球", "cone": "圓錐", "torus": "環",
     "extrude": "快速拉伸", "revolve": "快速旋轉", "rod": "外螺紋螺桿",
     "thread_tool": "內螺紋工具體", "step": "匯入 STEP",
-    "translate": "平移", "sketch": "草圖", "sketch_extrude": "草圖拉伸", "sketch_revolve": "草圖旋轉", "sketch_sweep": "草圖掃掠", "helix": "螺旋線路徑", "annotation": "半徑/直徑標註", "pattern": "3D 陣列", "appearance": "外觀", "mirror": "鏡射實體", "hole": "孔", "shell": "抽殼", "refplane": "參考面", "scale": "縮放", "rotate": "旋轉", "fillet": "圓角", "chamfer": "倒角",
+    "translate": "平移", "sketch": "草圖", "sketch_extrude": "草圖拉伸", "sketch_revolve": "草圖旋轉", "sketch_sweep": "草圖掃掠", "sketch_loft": "草圖放樣", "helix": "螺旋線路徑", "annotation": "半徑/直徑標註", "pattern": "3D 陣列", "appearance": "外觀", "mirror": "鏡射實體", "hole": "孔", "shell": "抽殼", "refplane": "參考面", "scale": "縮放", "rotate": "旋轉", "fillet": "圓角", "chamfer": "倒角",
     "thread_hole": "螺紋孔", "boolean": "布林運算", "delete": "刪除",
 }
 
@@ -148,4 +148,22 @@ def sweep_solid(p: dict, profile: dict, path: dict) -> cq.Shape:
     res = SK._fuse(solids)
     if not res.isValid() or res.Volume() < 1e-9:
         raise ValueError("掃掠結果無效:請確認輪廓位於路徑起點、垂直於路徑起始方向")
+    return res
+
+
+def loft_solid(p: dict, profiles: list) -> cq.Shape:
+    """依序通過多個輪廓草圖(各取面積最大的外輪廓)的放樣。p["ruled"]=True 為直紋(各段直線連接)。"""
+    if len(profiles) < 2:
+        raise ValueError("放樣至少需要兩個輪廓草圖")
+    wires = []
+    for sk in profiles:
+        faces = SK.local_faces(sk["entities"])
+        f = max(faces, key=lambda x: x.Area()).transformShape(F.plane_from_dict(sk["wp"]).rG)
+        wires.append(f.outerWire())
+    try:
+        res = cq.Solid.makeLoft(wires, bool(p.get("ruled", False)))
+    except Exception as e:  # noqa: BLE001
+        raise ValueError("放樣失敗:請確認各輪廓都是封閉輪廓,且彼此位置不同") from e
+    if not res.isValid() or res.Volume() < 1e-9:
+        raise ValueError("放樣結果無效:請檢查輪廓的位置與順序")
     return res

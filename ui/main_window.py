@@ -124,6 +124,8 @@ class MainWindow(QMainWindow):
         e.addAction(self.act_undo)
         e.addAction(self.act_redo)
         e.addSeparator()
+        e.addAction(self._action("變數與公式...", self.on_variables))
+        e.addSeparator()
         e.addAction(self._action("編輯所選特徵參數...", self.on_edit_feature, "F2"))
         e.addAction(self._action("刪除所選特徵", self.on_delete_feature))
         e.addSeparator()
@@ -149,6 +151,7 @@ class MainWindow(QMainWindow):
         sk.addAction(self._action("草圖拉伸(實體/切除)...", lambda _=None: self.on_sketch_solid("sketch_extrude")))
         sk.addAction(self._action("草圖旋轉(實體/切除)...", lambda _=None: self.on_sketch_solid("sketch_revolve")))
         sk.addAction(self._action("草圖掃掠(實體/切除)...", self.on_sketch_sweep))
+        sk.addAction(self._action("草圖放樣(實體/切除)...", self.on_sketch_loft))
         sk.addSeparator()
         sk.addAction(self._action("在鎖定平面建立螺旋線路徑...", self.on_create_helix))
         sk.addAction(self._action("編輯所選螺旋線...", self.on_edit_helix))
@@ -1047,6 +1050,85 @@ class MainWindow(QMainWindow):
         if hid is not None:
             self._run(lambda: self.doc.add_feature("delete", {"body": hid}))
 
+    def on_sketch_loft(self):
+        sketches, bodies = self.doc.sketches, self.doc.bodies
+        if len(sketches) < 2:
+            QMessageBox.information(self, "草圖放樣", "需要至少兩個封閉輪廓草圖(位於不同的平面/位置)")
+            return
+        items = [f"{i}: {n}" for i, n, _ in sketches]
+        title, fields = SCHEMAS["sketch_loft"]
+        pf = [(f"p{k}", f"輪廓 {k + 1}" + ("" if k < 2 else "(可不選)"), "combo", items if k < 2 else ["(無)"] + items)
+              for k in range(4)]
+        fields = pf + list(fields) + [("target", "目標實體(聯集/切除用)", "combo",
+                                       [f"{b.id}: {b.name}" for b in bodies] or ["(無)"])]
+        v = ask(title + "(依序通過各輪廓)", fields, self, initial={"p0": items[0], "p1": items[1]})
+        if not v:
+            return
+        ids = [int(v[f"p{k}"].split(":")[0]) for k in range(4) if v[f"p{k}"] != "(無)"]
+        params = {"profiles": ids, "ruled": v["ruled"], "op": v["op"]}
+        if v["op"] != "新實體":
+            if not bodies:
+                QMessageBox.information(self, "草圖放樣", "沒有可作為目標的實體")
+                return
+            params["target"] = int(v["target"].split(":")[0])
+        self._run(lambda: self.doc.add_feature("sketch_loft", params))
+
+    def on_variables(self):
+        """編輯變數與公式:每行「名稱 = 數字或算式」,後面的可引用前面的;特徵參數以 =名稱 引用。"""
+        from PyQt5.QtWidgets import QDialog, QDialogButtonBox, QLabel
+        dlg = QDialog(self)
+        dlg.setWindowTitle("變數與公式")
+        dlg.resize(520, 420)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel("每行一個:名稱 = 數字或算式(例如  孔徑 = 板厚 / 2 )。\n"
+                             "特徵對話框的數值欄位輸入「=孔徑」即可引用;改這裡的值,相關特徵自動重算。"))
+        edit = QPlainTextEdit()
+        edit.setPlainText("\n".join(f"{k} = {v if isinstance(v, str) else format(v, '.10g')}"
+                                    for k, v in self.doc.variables.items()))
+        lay.addWidget(edit)
+        preview = QLabel("")
+        preview.setWordWrap(True)
+        lay.addWidget(preview)
+
+        def parse():
+            out = {}
+            for n, line in enumerate(edit.toPlainText().splitlines(), 1):
+                if not line.strip():
+                    continue
+                if "=" not in line:
+                    raise ValueError(f"第 {n} 行缺少 =")
+                name, ex = (t.strip() for t in line.split("=", 1))
+                if not name.isidentifier():
+                    raise ValueError(f"第 {n} 行的名稱「{name}」無效(可用中英文、數字、底線,不可數字開頭)")
+                out[name] = ex if not _is_number(ex) else float(ex)
+            from core.expr import evaluate_all
+            return out, evaluate_all(out)
+
+        def check():
+            try:
+                _, vals = parse()
+                preview.setText("結果:" + "  ".join(f"{k}={v:.6g}" for k, v in vals.items()))
+            except ValueError as e:
+                preview.setText(f"⚠ {e}")
+
+        edit.textChanged.connect(check)
+        check()
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.button(QDialogButtonBox.Ok).setText("套用")
+        box.button(QDialogButtonBox.Cancel).setText("取消")
+        box.accepted.connect(dlg.accept)
+        box.rejected.connect(dlg.reject)
+        lay.addWidget(box)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        try:
+            variables, _ = parse()
+        except ValueError as e:
+            QMessageBox.warning(self, "變數與公式", str(e))
+            return
+        if self._run(lambda: self.doc.set_variables(variables)):
+            self._report_errors()
+
     def on_delete_sketch(self):
         r = self.sketch_list.currentRow()
         if r < 0 or r >= len(self.doc.sketches):
@@ -1236,3 +1318,11 @@ class MainWindow(QMainWindow):
         name = os.path.basename(self.doc.path) if self.doc.path else "未命名"
         self.setWindowTitle(f"{APP} - {name}{' *' if self.doc.dirty else ''}")
         self.statusBar().showMessage(f"共 {len(self.doc.bodies)} 個實體、{len(self.doc.features)} 個特徵")
+
+
+def _is_number(text: str) -> bool:
+    try:
+        float(text)
+        return True
+    except ValueError:
+        return False

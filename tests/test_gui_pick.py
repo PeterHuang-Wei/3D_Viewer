@@ -425,3 +425,19 @@ def test_appearance_and_section_view():
         assert w.scene.plotter.renderer.actors["body0"].GetMapper().GetNumberOfClippingPlanes() == 0
     finally:
         mw.ask = orig
+
+
+def test_expression_fields_and_loft_dialog():
+    from ui.dialogs import ParamDialog, parse_num, fmt_num
+    import pytest
+    app = QApplication.instance() or QApplication([])
+    assert parse_num("12.5") == 12.5 and parse_num(" =w/2 ") == "=w/2" and fmt_num(3.0) == "3"
+    with pytest.raises(ValueError):
+        parse_num("abc")
+    dlg = ParamDialog("t", [("x", "X", "num", 5.0), ("c", "C", "combo", ["a", "b"])])
+    dlg.set_values({"x": "=寬/2", "c": "b"})
+    assert dlg.values() == {"x": "=寬/2", "c": "b"}
+    w = MainWindow()
+    w.doc.set_variables({"寬": 30})
+    w._run(lambda: w.doc.add_feature("box", {"x": "=寬", "y": 10, "z": 10}))
+    assert abs(w.doc.bodies[0].shape.BoundingBox().xlen - 30) < 1e-2
