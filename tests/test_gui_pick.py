@@ -438,6 +438,24 @@ def test_expression_fields_and_loft_dialog():
     dlg.set_values({"x": "=寬/2", "c": "b"})
     assert dlg.values() == {"x": "=寬/2", "c": "b"}
     w = MainWindow()
+    w.show()                                   # 未顯示的 OpenGL 視窗做繪製會間歇性崩潰
     w.doc.set_variables({"寬": 30})
     w._run(lambda: w.doc.add_feature("box", {"x": "=寬", "y": 10, "z": 10}))
     assert abs(w.doc.bodies[0].shape.BoundingBox().xlen - 30) < 1e-2
+
+
+def test_drawing_dialog_builds_sheet(monkeypatch):
+    import ui.main_window as mw
+    from PyQt5.QtWidgets import QDialog
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow()
+    w.show()
+    w.doc.add_feature("box", {"x": 60, "y": 40, "z": 30})
+    w._update()
+    monkeypatch.setattr(mw, "ask", lambda t, f, p=None, initial=None: {
+        "paper": "A4", "proj": "第一角法", "scale": "自動", "front": True, "top": True, "right": False,
+        "iso": False, "hidden": True, "dims": True, "title": "T", "part": "P", "author": "A"})
+    shown = {}
+    monkeypatch.setattr(QDialog, "exec_", lambda self: shown.setdefault("title", self.windowTitle()) and 0)
+    w.on_drawing()
+    assert "工程圖預覽" in shown["title"]

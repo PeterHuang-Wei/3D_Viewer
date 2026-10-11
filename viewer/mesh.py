@@ -12,7 +12,7 @@ from OCP.TopLoc import TopLoc_Location
 def _tessellate(face: cq.Face, tol: float, ang: float):
     """以絕對誤差(mm)重新細分一個面。先清除舊網格,否則較粗的設定會沿用先前較細的結果。"""
     BRepTools.Clean_s(face.wrapped)
-    BRepMesh_IncrementalMesh(face.wrapped, tol, False, ang, True)
+    BRepMesh_IncrementalMesh(face.wrapped, tol, False, ang, False)
     loc = TopLoc_Location()
     poly = BRep_Tool.Triangulation_s(face.wrapped, loc)
     if poly is None:

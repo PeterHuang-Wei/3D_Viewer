@@ -115,6 +115,7 @@ class MainWindow(QMainWindow):
         m.addAction(self._action("匯入 STEP...", self.on_import_step))
         m.addAction(self._action("匯出 STEP...", self.on_export_step))
         m.addAction(self._action("匯出 STL...", self.on_export_stl))
+        m.addAction(self._action("輸出工程圖(PDF/SVG/PNG/DXF)...", self.on_drawing))
         m.addSeparator()
         m.addAction(self._action("結束", self.close, "Ctrl+Q"))
 
@@ -345,6 +346,69 @@ class MainWindow(QMainWindow):
             return
         self.statusBar().showMessage(
             f"已匯出 {os.path.basename(path)}({n:,} 個三角形,弦高誤差 {tol} mm)")
+
+    def on_drawing(self):
+        """工程圖:三視圖 + 等角視、總尺寸與孔徑標註、標題欄;預覽後輸出 PDF/SVG/PNG/DXF。"""
+        from PyQt5.QtGui import QPixmap
+        from PyQt5.QtWidgets import QDialog, QScrollArea, QLabel as _Label
+        from core import drawing as DR
+        from ui.drawing_render import export_sheet, render_image
+        ap = self.doc.appearance
+        shapes = [b.shape for b in self.doc.bodies if ap.get(b.id, {}).get("visible", True)]
+        if not shapes:
+            QMessageBox.information(self, "工程圖", "目前沒有可繪製的實體")
+            return
+        name = os.path.splitext(os.path.basename(self.doc.path))[0] if self.doc.path else "未命名"
+        v = ask("工程圖設定", [
+            ("paper", "紙張(橫式)", "combo", list(DR.PAPERS)),
+            ("proj", "投影法", "combo", ["第三角法", "第一角法"]),
+            ("scale", "比例", "combo", ["自動", "1:1", "1:2", "1:5", "1:10", "1:20", "1:50", "1:100", "2:1", "5:1", "10:1"]),
+            ("front", "前視圖", "bool", True), ("top", "上視圖", "bool", True), ("right", "右視圖", "bool", True),
+            ("iso", "等角視", "bool", True), ("hidden", "顯示隱藏線(虛線)", "bool", True),
+            ("dims", "標註總尺寸與孔徑", "bool", True),
+            ("title", "圖名", "text", f"{name} 工程圖"), ("part", "零件名稱", "text", name),
+            ("author", "設計者", "text", "")], self, initial={"paper": "A3"})
+        if not v:
+            return
+        views = tuple(n for n, k in (("前視", "front"), ("上視", "top"), ("右視", "right"), ("等角視", "iso")) if v[k])
+        if not views:
+            QMessageBox.information(self, "工程圖", "請至少選一個視圖")
+            return
+        try:
+            sheet = DR.build_sheet(shapes, views, v["paper"], v["proj"] == "第三角法", v["scale"],
+                                   v["hidden"], v["dims"], {"title": v["title"], "part": v["part"],
+                                                           "author": v["author"], "paper": v["paper"]})
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "工程圖", f"產生失敗:{e}")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"工程圖預覽(比例 {sheet.scale[0]}:{sheet.scale[1]})")
+        dlg.resize(1100, 820)
+        lay = QVBoxLayout(dlg)
+        lab = _Label()
+        lab.setPixmap(QPixmap.fromImage(render_image(sheet, 80)))
+        sc = QScrollArea()
+        sc.setWidget(lab)
+        lay.addWidget(sc)
+        b_save = QPushButton("儲存為 PDF / SVG / PNG / DXF...")
+        lay.addWidget(b_save)
+
+        def save():
+            path, flt = QFileDialog.getSaveFileName(
+                dlg, "儲存工程圖", f"{name}.pdf", "PDF (*.pdf);;SVG (*.svg);;PNG (*.png);;DXF (*.dxf)")
+            if not path:
+                return
+            if not path.lower().endswith((".pdf", ".svg", ".png", ".dxf")):
+                path += "." + flt.split("(*.")[1].split(")")[0].split()[0]
+            try:
+                export_sheet(sheet, path)
+            except Exception as e:  # noqa: BLE001
+                QMessageBox.critical(dlg, "儲存失敗", str(e))
+                return
+            self.statusBar().showMessage(f"已輸出工程圖 {os.path.basename(path)}")
+
+        b_save.clicked.connect(save)
+        dlg.exec_()
 
     # --- 編輯 / 歷史 ---
     def _run(self, fn):
