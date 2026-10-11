@@ -393,3 +393,35 @@ def test_hole_pattern_mirror_shell_dialogs():
         assert w.doc.bodies[0].shape.Volume() < v_holes
     finally:
         mw.ask = orig
+
+
+def test_appearance_and_section_view():
+    import ui.main_window as mw
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow()
+    w.show()
+    w.doc.add_feature("box", {"x": 40, "y": 40, "z": 20})
+    w.doc.add_feature("cylinder", {"r": 4, "h": 10})
+    w.doc.add_feature("translate", {"body": 2, "x": 60, "y": 0, "z": 0})
+    w._update()
+    w.tree.setCurrentRow(1)
+    w.on_body_toggle()                                          # 隱藏圓柱
+    assert "(隱藏)" in w.tree.item(1).text() and w.scene._meshes[1].n_cells == 0
+    assert w.scene._meshes[0].n_cells > 0
+    w.on_show_all()
+    assert w.scene._meshes[1].n_cells > 0 and "(隱藏)" not in w.tree.item(1).text()
+    w.tree.setCurrentRow(0)
+    w._appearance(color="#ff0000", opacity=0.5)
+    actor = w.scene.plotter.renderer.actors["body0"]
+    assert abs(actor.GetProperty().GetOpacity() - 0.5) < 1e-6 and actor.GetProperty().GetColor() == (1.0, 0.0, 0.0)
+    orig = mw.ask
+    try:
+        mw.ask = lambda t, f, p=None, initial=None: {"plane": "YZ", "offset": 0.0, "flip": False}
+        w.on_section()
+        assert w.scene.section is not None
+        assert actor.GetMapper().GetNumberOfClippingPlanes() == 1
+        w.on_section_off()
+        assert w.scene.section is None
+        assert w.scene.plotter.renderer.actors["body0"].GetMapper().GetNumberOfClippingPlanes() == 0
+    finally:
+        mw.ask = orig

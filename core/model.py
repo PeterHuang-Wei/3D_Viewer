@@ -93,6 +93,19 @@ class Document:
         return [(i, n, s) for i, (n, s) in last.items() if isinstance(s, dict) and "origin" in s]
 
     @property
+    def appearance(self) -> dict:
+        """各實體的外觀 {實體編號: {"color": "#rrggbb"|None, "opacity": 0~1, "visible": bool}}(依特徵順序累積)。"""
+        out = {}
+        for k, f in enumerate(self.features):
+            if f.kind != "appearance" or f.suppressed or (self.rollback is not None and k > self.rollback) or f.error:
+                continue
+            cur = out.setdefault(f.params["body"], {"color": None, "opacity": 1.0, "visible": True})
+            for key in ("color", "opacity", "visible"):
+                if key in f.params:
+                    cur[key] = f.params[key]
+        return out
+
+    @property
     def annotations(self) -> list[tuple[int, str, dict]]:
         """目前的半徑/直徑標註 [(編號, 名稱, 標註資料)]。"""
         last = self.states[-1] if self.states else {}
@@ -127,6 +140,12 @@ class Document:
             name = p.get("name") or f"參考面{feat.out_ids[0]}"
             bodies[feat.out_ids[0]] = (name, F.offset_plane(
                 p["wp"], p["offset"], p.get("rx", 0), p.get("ry", 0)))
+        elif k == "appearance":
+            if p["body"] not in bodies:
+                raise KeyError(p["body"])               # 實體不存在 -> 標示錯誤
+            op = p.get("opacity", 1.0)
+            if not 0.05 <= op <= 1.0:
+                raise ValueError("透明度需介於 5% 與 100%")
         elif k == "annotation":
             name, shape = bodies[p["body"]]              # 實體不存在會丟 KeyError -> 標記失敗
             geo = MS.circular_geometry(shape, p["kind"], p["index"], p["at"])

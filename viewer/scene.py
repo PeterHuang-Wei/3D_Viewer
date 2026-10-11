@@ -1,5 +1,6 @@
 """3D 視窗:封裝 pyvistaqt 的 QtInteractor。"""
 import numpy as np
+import pyvista as pv
 from PyQt5.QtCore import QEvent, QObject, Qt
 from pyvistaqt import QtInteractor
 
@@ -67,6 +68,8 @@ class Scene:
         self.wireframe = False
         self.show_edges = True
         self.quality = DEFAULT_QUALITY
+        self.section = None        # 截面 ((origin), (normal)) 或 None
+        self._body_actors = []
         SK.DISPLAY_SEGMENTS = QUALITY[self.quality]["sketch_segs"]
         # 選取狀態:模式 off/edge/face;只允許選同一個實體內的邊或面
         self.mode = "off"
@@ -102,7 +105,16 @@ class Scene:
         self.clear_selection(notify=False)
         self.plotter.clear()
         self._meshes, self._edge_idx, self._edge_polys = [], [], []
+        appearance = doc.appearance
+        self._body_actors = []
         for i, body in enumerate(doc.bodies):
+            ap = appearance.get(body.id, {})
+            if not ap.get("visible", True):                 # 隱藏的實體:保留空位使索引對齊,不畫也不能點選
+                empty = pv.PolyData()
+                self._meshes.append(empty)
+                self._edge_polys.append(empty)
+                self._edge_idx.append(EdgeIndex(empty))
+                continue
             q = QUALITY[self.quality]
             mesh = shape_to_mesh(body.shape, q["tol"], q["ang"])
             edges = shape_to_edges(body.shape, q["edge_pts"])
@@ -111,16 +123,20 @@ class Scene:
             self._edge_idx.append(EdgeIndex(edges))
             if mesh.n_cells == 0:
                 continue
-            self.plotter.add_mesh(
-                mesh, color=COLORS[i % len(COLORS)], smooth_shading=True,
+            color = ap.get("color") or COLORS[i % len(COLORS)]
+            actor = self.plotter.add_mesh(
+                mesh, color=color, smooth_shading=True, opacity=ap.get("opacity", 1.0),
                 style="wireframe" if self.wireframe else "surface",
                 name=f"body{i}",
             )
+            self._body_actors.append(actor)
             if self.show_edges and not self.wireframe:
-                self.plotter.add_mesh(
+                self._body_actors.append(self.plotter.add_mesh(
                     edges, color="black",
                     line_width=1.5, name=f"edge{i}",
-                )
+                ))
+        self._apply_section()
+        self._draw_section_plane()
         self._draw_planes()
         self._draw_sketches()
         self._draw_helices()
@@ -129,6 +145,38 @@ class Scene:
         self.measure.redraw()
         if reset_camera:
             self.set_view("等角視")
+
+    # --- 截面視圖 ---
+    def set_section(self, origin, normal) -> None:
+        """啟用截面:切掉平面法向正側的部分(origin、normal 為世界座標)。None 關閉。"""
+        self.section = None if origin is None else (tuple(origin), tuple(normal))
+        self._apply_section()
+        self._draw_section_plane()
+        self.plotter.render()
+
+    def _apply_section(self) -> None:
+        import vtk as _vtk
+        for actor in getattr(self, "_body_actors", []):
+            mapper = actor.GetMapper()
+            mapper.RemoveAllClippingPlanes()
+            if self.section is not None:
+                (o, n) = self.section
+                plane = _vtk.vtkPlane()
+                plane.SetOrigin(*o)
+                plane.SetNormal(*(-np.array(n)))          # vtk 保留法向正側,所以取反:切掉 n 的正側
+                mapper.AddClippingPlane(plane)
+                if actor.GetProperty().GetOpacity() >= 1.0 and mapper.GetInput().GetNumberOfLines() == 0:
+                    back = _vtk.vtkProperty()              # 截開後內側面用深色,看起來像剖面
+                    back.SetColor(0.85, 0.35, 0.25)
+                    actor.SetBackfaceProperty(back)
+
+    def _draw_section_plane(self) -> None:
+        self.plotter.remove_actor("section_plane", render=False)
+        if self.section is not None:
+            o, n = (np.array(v) for v in self.section)
+            size = self._plane_size()
+            self.plotter.add_mesh(pv.Plane(center=o, direction=n, i_size=size, j_size=size), color="#ffd24a",
+                                  opacity=0.12, name="section_plane", pickable=False)
 
     def set_view_dir(self, direction, up) -> None:
         self.plotter.view_vector(tuple(direction), viewup=tuple(up))

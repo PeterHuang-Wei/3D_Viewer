@@ -6,9 +6,10 @@ from PyQt5.QtGui import QBrush, QColor, QFont
 from PyQt5.QtWidgets import (
     QMainWindow, QAction, QActionGroup, QFileDialog, QMessageBox, QListWidget, QListWidgetItem,
     QDockWidget, QLabel, QToolBar, QLineEdit, QCheckBox, QDoubleSpinBox,
-    QInputDialog, QMenu, QPushButton, QWidget, QVBoxLayout, QPlainTextEdit, QApplication,
+    QInputDialog, QMenu, QColorDialog, QPushButton, QWidget, QVBoxLayout, QPlainTextEdit, QApplication,
 )
 
+import numpy as np
 from core import features as F
 from core import sketch_solver as K
 from core.model import Document, STL_QUALITY
@@ -39,6 +40,8 @@ class MainWindow(QMainWindow):
         self.tree = QListWidget()                       # 目前實體
         self.history = QListWidget()                    # 特徵歷史
         self.history.itemDoubleClicked.connect(lambda _: self.on_edit_feature())
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._body_menu)
         self.history.setContextMenuPolicy(Qt.CustomContextMenu)
         self.history.customContextMenuRequested.connect(self._history_menu)
         self.sketch_list = QListWidget()                # 草圖清單
@@ -215,6 +218,10 @@ class MainWindow(QMainWindow):
         v.addSeparator()
         v.addAction(self._action("線框模式", self.on_wireframe, checkable=True))
         v.addAction(self._action("顯示邊線", self.on_edges, checkable=True, checked=True))
+        v.addAction(self._action("截面視圖...", self.on_section))
+        v.addAction(self._action("關閉截面", self.on_section_off))
+        v.addSeparator()
+        v.addAction(self._action("全部顯示(取消隱藏)", self.on_show_all))
         qm = v.addMenu("顯示精細度(圓/曲面)")
         qgrp = QActionGroup(self)
         for name, q in QUALITY.items():
@@ -1108,6 +1115,73 @@ class MainWindow(QMainWindow):
             self._run(lambda: self.doc.add_feature(
                 "shell", {**v, "body": body.id, "faces": sorted(s.sel_faces)}))
 
+    # --- 外觀 / 截面 ---
+    def _body_menu(self, pos):
+        item = self.tree.itemAt(pos)
+        if item is None:
+            return
+        self.tree.setCurrentRow(self.tree.row(item))
+        bid = self.doc.bodies[self.tree.currentRow()].id
+        hidden = not self.doc.appearance.get(bid, {}).get("visible", True)
+        m = QMenu(self)
+        for text, slot in (("顏色...", self.on_body_color), ("透明度...", self.on_body_opacity),
+                           ("顯示" if hidden else "隱藏", self.on_body_toggle),
+                           ("重設外觀", self.on_body_reset),
+                           ("所選實體的屬性...", self.on_body_props), ("刪除實體", self.on_delete_body)):
+            m.addAction(text).triggered.connect(lambda _=False, s=slot: s())
+        m.exec_(self.tree.mapToGlobal(pos))
+
+    def _appearance(self, **kw):
+        bid = self._current_id()
+        if bid is not None:
+            self._run(lambda: self.doc.add_feature("appearance", {"body": bid, **kw}))
+
+    def on_body_color(self):
+        c = QColorDialog.getColor(QColor("#8fb8de"), self, "選擇實體顏色")
+        if c.isValid():
+            self._appearance(color=c.name())
+
+    def on_body_opacity(self):
+        v, ok = QInputDialog.getInt(self, "透明度", "不透明度(%,5~100):", 100, 5, 100)
+        if ok:
+            self._appearance(opacity=v / 100.0)
+
+    def on_body_toggle(self):
+        bid = self._current_id()
+        if bid is not None:
+            visible = self.doc.appearance.get(bid, {}).get("visible", True)
+            self._appearance(visible=not visible)
+
+    def on_body_reset(self):
+        self._appearance(color=None, opacity=1.0, visible=True)
+
+    def on_show_all(self):
+        for b in self.doc.bodies:
+            if not self.doc.appearance.get(b.id, {}).get("visible", True):
+                self.doc.add_feature("appearance", {"body": b.id, "visible": True})
+        self._update(reset_camera=False)
+
+    def on_section(self):
+        v = ask("截面視圖(切掉平面法向正側)", [
+            ("plane", "截面平面", "combo", ["XY", "XZ", "YZ", "鎖定平面"]),
+            ("offset", "沿法向的位置(偏移)", "num", 0), ("flip", "反向(保留另一側)", "bool", False)], self,
+            initial={"plane": "鎖定平面" if self.wp else "XZ"})
+        if not v:
+            return
+        if v["plane"] == "鎖定平面":
+            if not self.wp:
+                QMessageBox.information(self, "截面視圖", "請先鎖定平面(F3),或改選 XY/XZ/YZ")
+                return
+            wp = self.wp
+        else:
+            wp = F.WORLD_PLANES[v["plane"]]
+        n = np.array(wp["normal"], float) * (-1 if v["flip"] else 1)
+        self.scene.set_section(np.array(wp["origin"], float) + n * v["offset"], n)
+        self.statusBar().showMessage("截面已啟用(「檢視 → 關閉截面」可取消)")
+
+    def on_section_off(self):
+        self.scene.set_section(None, None)
+
     # --- 檢視 ---
     def on_quality(self, name):
         self.scene.set_quality(name)
@@ -1134,7 +1208,9 @@ class MainWindow(QMainWindow):
             self._set_lock(self.wp, self.wp_id)
         self.scene.refresh(self.doc, reset_camera and bool(self.doc.bodies))
         self.tree.clear()
-        self.tree.addItems([f"{b.id}: {b.name}" for b in self.doc.bodies])
+        ap = self.doc.appearance
+        self.tree.addItems([f"{b.id}: {b.name}" + ("(隱藏)" if not ap.get(b.id, {}).get("visible", True) else "")
+                            for b in self.doc.bodies])
         self.ann_list.clear()
         self.ann_list.addItems([f"{i}: {n}" for i, n, _ in self.doc.annotations])
         self.helix_list.clear()
