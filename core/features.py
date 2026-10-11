@@ -211,3 +211,82 @@ def offset_plane(wp: dict, offset: float, rx: float = 0.0, ry: float = 0.0) -> d
     x, n = _rot(x, y, ry), _rot(n, y, ry)       # 再繞(新的)Y 軸傾斜
     r = lambda v: [round(float(c), 6) + 0.0 for c in v]  # noqa: E731
     return {"origin": r(o), "xdir": r(x), "normal": r(n)}
+
+
+# --- 3D 陣列 / 鏡射 / 孔 / 抽殼 ---
+def _fuse_all(shapes):
+    res = shapes[0]
+    if len(shapes) > 1:
+        res = res.fuse(*shapes[1:]).clean()
+    return res
+
+
+def pattern_linear(shape: cq.Shape, n: int, dx, dy, dz) -> cq.Shape:
+    """線性陣列:n 為總數量(含原件),各份以 (dx,dy,dz) 為間距,聯集成同一實體。"""
+    if int(n) < 2:
+        raise ValueError("陣列總數量至少 2")
+    return _fuse_all([shape] + [translate(shape, k * dx, k * dy, k * dz) for k in range(1, int(n))])
+
+
+def pattern_circular(shape: cq.Shape, n: int, total_angle: float, origin, direction) -> cq.Shape:
+    """圓形陣列:繞通過 origin、方向 direction 的軸;總角度 360 時等分,否則首尾各一份。"""
+    n = int(n)
+    if n < 2:
+        raise ValueError("陣列總數量至少 2")
+    o = cq.Vector(*origin)
+    d = cq.Vector(*direction)
+    if d.Length < 1e-9:
+        raise ValueError("旋轉軸方向不可為零向量")
+    step = total_angle / n if abs(total_angle - 360.0) < 1e-9 else total_angle / (n - 1)
+    return _fuse_all([shape] + [shape.rotate(o, o + d, k * step) for k in range(1, n)])
+
+
+def mirror_shape(shape: cq.Shape, wp: dict) -> cq.Shape:
+    """對工作平面(origin/normal)鏡射。"""
+    return shape.mirror(cq.Vector(*wp["normal"]), cq.Vector(*wp["origin"]))
+
+
+def hole_tool(kind: str, d: float, depth: float, cb_d=0.0, cb_depth=0.0, csk_d=0.0, csk_angle=90.0) -> cq.Shape:
+    """孔的切削工具體:由 z=0 往 +Z 延伸(之後再用 to_plane 翻向實體內)。"""
+    if d <= 0 or depth <= 0:
+        raise ValueError("孔徑與孔深必須大於 0")
+    parts = [cq.Solid.makeCylinder(d / 2, depth)]
+    if kind == "沉頭孔":
+        if cb_d <= d or cb_depth <= 0:
+            raise ValueError("沉頭直徑必須大於孔徑,沉頭深度大於 0")
+        parts.append(cq.Solid.makeCylinder(cb_d / 2, cb_depth))
+    elif kind == "埋頭孔":
+        if csk_d <= d or not 10 <= csk_angle < 180:
+            raise ValueError("埋頭直徑必須大於孔徑,角度需在 10°~180°")
+        h = (csk_d - d) / 2 / math.tan(math.radians(csk_angle / 2))
+        parts.append(cq.Solid.makeCone(csk_d / 2, d / 2, h))
+    return _fuse_all(parts)
+
+
+def make_holes(body: cq.Shape, wp: dict, positions, kind, d, depth, flip=False, **kw) -> cq.Shape:
+    """在工作平面上的多個位置(平面座標 u,v)鑽孔;depth=0 表通孔。預設朝實體內(平面法向反向)。"""
+    if not positions:
+        raise ValueError("請輸入至少一個孔位置,例如 0,0; 20,0")
+    bb = body.BoundingBox()
+    depth_eff = depth if depth > 0 else (bb.xlen + bb.ylen + bb.zlen) + 10
+    tool0 = hole_tool(kind, d, depth_eff, **kw)
+    tools = [to_plane(tool0.moved(cq.Location(cq.Vector(u, v, 0))), wp, flip=not flip) for u, v in positions]
+    res = body.cut(*tools).clean() if len(tools) > 1 else body.cut(tools[0]).clean()
+    if abs(res.Volume() - body.Volume()) < 1e-9:
+        raise ValueError("孔沒有切到實體,請確認工作平面與孔位置")
+    return res
+
+
+def shell_shape(shape: cq.Shape, face_ids, thickness: float, inward: bool = True) -> cq.Shape:
+    """抽殼:face_ids 為要開口的面(空 = 封閉空心);thickness 為壁厚。"""
+    if thickness <= 0:
+        raise ValueError("壁厚必須大於 0")
+    solid = _single_solid(shape)
+    faces = solid.Faces()
+    try:
+        res = solid.hollow([shape.Faces()[i] for i in sorted(face_ids)], -thickness if inward else thickness)
+    except Exception as e:  # noqa: BLE001
+        raise ValueError("抽殼失敗:壁厚可能過大或所選面不適用") from e
+    if not res.isValid() or res.Volume() < 1e-9:
+        raise ValueError("抽殼結果無效:請減小壁厚")
+    return res

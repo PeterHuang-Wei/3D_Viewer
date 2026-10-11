@@ -352,3 +352,44 @@ def test_history_suppress_rollback_ui():
     w.history.setCurrentRow(1)
     w.on_move_feature(1)
     assert w.doc.features[2].kind == "cylinder" and "找不到被參照" in w.doc.features[1].error
+
+
+def test_hole_pattern_mirror_shell_dialogs():
+    import ui.main_window as mw
+    from PyQt5.QtWidgets import QMessageBox
+    QMessageBox.information = staticmethod(lambda *a, **k: None)
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow()
+    w.show()
+    w.doc.add_feature("box", {"x": 40, "y": 40, "z": 20})
+    w._update()
+    w.tree.setCurrentRow(0)
+    orig = mw.ask
+    try:
+        w._set_lock({"origin": [0, 0, 10], "xdir": [1, 0, 0], "normal": [0, 0, 1]})
+        mw.ask = lambda t, f, p=None, initial=None: {
+            "type": "簡單孔", "d": 6.0, "depth": 0.0, "cb_d": 14.0, "cb_depth": 5.0, "csk_d": 16.0,
+            "csk_angle": 90.0, "pts": "0,0; 10,0", "flip": False}
+        w.on_hole()
+        assert w.doc.features[-1].kind == "hole" and w.doc.features[-1].error is None
+        v_holes = w.doc.bodies[0].shape.Volume()
+        assert v_holes < 32000
+        mw.ask = lambda t, f, p=None, initial=None: {"plane": "YZ", "op": "另建新實體"}
+        w.tree.setCurrentRow(0)
+        w.on_mirror()
+        assert len(w.doc.bodies) == 2
+        mw.ask = lambda t, f, p=None, initial=None: {
+            "kind": "線性", "n": 2.0, "dx": 50.0, "dy": 0.0, "dz": 0.0, "angle": 360.0, "axis": "Z 軸",
+            "cx": 0.0, "cy": 0.0, "cz": 0.0}
+        w.tree.setCurrentRow(1)
+        w.on_pattern()
+        assert w.doc.features[-1].kind == "pattern" and w.doc.features[-1].error is None
+        w.scene.set_mode("face")
+        top = next(i for i, f in enumerate(w.doc.bodies[0].shape.Faces()) if f.Center().z > 9 and f.Area() > 1000)
+        w.scene.sel_body, w.scene.sel_faces = 0, {top}
+        mw.ask = lambda t, f, p=None, initial=None: {"thickness": 0.5, "dir": "向內"}
+        w.on_shell()
+        assert w.doc.features[-1].kind == "shell" and w.doc.features[-1].error is None
+        assert w.doc.bodies[0].shape.Volume() < v_holes
+    finally:
+        mw.ask = orig

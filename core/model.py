@@ -179,6 +179,18 @@ class Document:
             names = p.get("names") or [f"{feat.label}{i}" for i in feat.out_ids]
             for i, shape, name in zip(feat.out_ids, shapes, names):
                 bodies[i] = (name, shape)
+        elif k == "mirror":
+            wp = p.get("wp") if p.get("plane") == "鎖定平面" else F.WORLD_PLANES.get(p.get("plane", ""))
+            if wp is None:
+                raise ValueError("鏡射平面未指定(請選 XY/XZ/YZ,或先鎖定平面)")
+            name, shape = bodies[p["body"]]
+            m = F.mirror_shape(shape, wp)
+            if p["op"] == "另建新實體":
+                if not feat.out_ids:
+                    feat.out_ids = [self._alloc()]
+                bodies[feat.out_ids[0]] = (f"{name}(鏡射)", m)
+            else:
+                bodies[p["body"]] = (name, shape.fuse(m).clean())
         elif k in MODIFIERS:
             name, shape = bodies[p["body"]]
             bodies[p["body"]] = (name, MODIFIERS[k](p, shape))

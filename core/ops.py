@@ -11,7 +11,7 @@ LABELS = {
     "box": "方塊", "cylinder": "圓柱", "sphere": "球", "cone": "圓錐", "torus": "環",
     "extrude": "快速拉伸", "revolve": "快速旋轉", "rod": "外螺紋螺桿",
     "thread_tool": "內螺紋工具體", "step": "匯入 STEP",
-    "translate": "平移", "sketch": "草圖", "sketch_extrude": "草圖拉伸", "sketch_revolve": "草圖旋轉", "sketch_sweep": "草圖掃掠", "helix": "螺旋線路徑", "annotation": "半徑/直徑標註", "refplane": "參考面", "scale": "縮放", "rotate": "旋轉", "fillet": "圓角", "chamfer": "倒角",
+    "translate": "平移", "sketch": "草圖", "sketch_extrude": "草圖拉伸", "sketch_revolve": "草圖旋轉", "sketch_sweep": "草圖掃掠", "helix": "螺旋線路徑", "annotation": "半徑/直徑標註", "pattern": "3D 陣列", "mirror": "鏡射實體", "hole": "孔", "shell": "抽殼", "refplane": "參考面", "scale": "縮放", "rotate": "旋轉", "fillet": "圓角", "chamfer": "倒角",
     "thread_hole": "螺紋孔", "boolean": "布林運算", "delete": "刪除",
 }
 
@@ -75,6 +75,27 @@ def _hole(p, s):
     return T.threaded_hole(s, d, pitch, p["depth"], (p["x"], p["y"], p["z"]), p["axis"], p["left"])
 
 
+def _pattern(p, s):
+    if p["kind"] == "線性":
+        return F.pattern_linear(s, p["n"], p["dx"], p["dy"], p["dz"])
+    ax = p["axis"]
+    if ax.startswith("鎖定") and p.get("wp"):
+        return F.pattern_circular(s, p["n"], p["angle"], p["wp"]["origin"], p["wp"]["normal"])
+    if ax.startswith("鎖定"):
+        raise ValueError("旋轉軸選了鎖定平面法向,但沒有工作平面")
+    d = {"X": (1, 0, 0), "Y": (0, 1, 0)}.get(ax[0], (0, 0, 1))
+    return F.pattern_circular(s, p["n"], p["angle"], (p["cx"], p["cy"], p["cz"]), d)
+
+
+def _holes(p, s):
+    if not p.get("wp"):
+        raise ValueError("孔需要在鎖定的工作平面上建立")
+    pts = F.parse_points(p["pts"])
+    return F.make_holes(s, p["wp"], pts, p["type"], p["d"], p["depth"], p.get("flip", False),
+                        cb_d=p.get("cb_d", 0), cb_depth=p.get("cb_depth", 0),
+                        csk_d=p.get("csk_d", 0), csk_angle=p.get("csk_angle", 90))
+
+
 # kind -> fn(params, shape) -> shape  (修改既有實體,params["body"] 為實體編號)
 MODIFIERS = {
     "translate": lambda p, s: F.translate(s, p["x"], p["y"], p["z"]),
@@ -84,6 +105,9 @@ MODIFIERS = {
     "fillet": lambda p, s: F.fillet(s, set(p["edges"]), p["r"]),
     "chamfer": lambda p, s: F.chamfer(s, set(p["edges"]), p["d"], p.get("d2") or None),
     "thread_hole": _hole,
+    "pattern": _pattern,
+    "hole": _holes,
+    "shell": lambda p, s: F.shell_shape(s, set(p["faces"]), p["thickness"], p["dir"] == "向內"),
 }
 
 

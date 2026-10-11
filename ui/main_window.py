@@ -134,6 +134,7 @@ class MainWindow(QMainWindow):
         c = bar.addMenu("建立(&C)")
         for kind in ("box", "cylinder", "sphere", "cone", "torus"):
             c.addAction(self._action(SCHEMAS[kind][0] + "...", lambda _, k=kind: self.on_create(k)))
+        c.addAction(self._action("孔(簡單/沉頭/埋頭,於鎖定平面)...", self.on_hole))
         c.addSeparator()
         c.addAction(self._action("快速拉伸(輪廓參數)...", lambda _=None: self.on_create("extrude")))
         c.addAction(self._action("快速旋轉(輪廓參數)...", lambda _=None: self.on_create("revolve")))
@@ -156,6 +157,8 @@ class MainWindow(QMainWindow):
         t.addAction(self._action("平移...", lambda: self.on_modify("translate")))
         t.addAction(self._action("旋轉...", lambda: self.on_modify("rotate")))
         t.addAction(self._action("縮放...", lambda _=None: self.on_modify("scale")))
+        t.addAction(self._action("3D 陣列(線性/圓形)...", self.on_pattern))
+        t.addAction(self._action("鏡射實體...", self.on_mirror))
         t.addSeparator()
         t.addAction(self._action("刪除實體", self.on_delete_body, "Del"))
 
@@ -170,6 +173,7 @@ class MainWindow(QMainWindow):
         m2.addSeparator()
         m2.addAction(self._action("圓角...", lambda: self.on_edge_feature("fillet")))
         m2.addAction(self._action("倒角...", lambda: self.on_edge_feature("chamfer")))
+        m2.addAction(self._action("抽殼(所選面為開口,未選則封閉空心)...", self.on_shell))
 
         th = bar.addMenu("螺牙(&H)")
         th.addAction(self._action("外螺紋螺桿...", lambda: self.on_create("rod")))
@@ -1043,6 +1047,66 @@ class MainWindow(QMainWindow):
             return
         sid = self.doc.sketches[r][0]
         self._run(lambda: self.doc.add_feature("delete", {"body": sid}))
+
+    # --- 3D 陣列 / 鏡射 / 孔 / 抽殼 ---
+    def _with_lock(self, params):
+        """若有鎖定平面,把它(與參考面綁定)寫進參數。"""
+        if self.wp:
+            params["wp"] = self.wp
+            if self.wp_id is not None:
+                params["plane_id"] = self.wp_id
+        return params
+
+    def on_pattern(self):
+        bid = self._current_id()
+        if bid is None:
+            return
+        title, fields = SCHEMAS["pattern"]
+        v = ask(title, fields, self)
+        if not v:
+            return
+        if v["kind"] == "圓形" and v["axis"].startswith("鎖定") and not self.wp:
+            QMessageBox.information(self, "3D 陣列", "旋轉軸選了「鎖定平面法向」,請先鎖定平面(F3)")
+            return
+        self._run(lambda: self.doc.add_feature("pattern", self._with_lock({**v, "body": bid})))
+
+    def on_mirror(self):
+        bid = self._current_id()
+        if bid is None:
+            return
+        title, fields = SCHEMAS["mirror"]
+        v = ask(title, fields, self, initial={"plane": "鎖定平面" if self.wp else "YZ"})
+        if not v:
+            return
+        if v["plane"] == "鎖定平面" and not self.wp:
+            QMessageBox.information(self, "鏡射實體", "請先鎖定平面(F3),或改選 XY/XZ/YZ")
+            return
+        self._run(lambda: self.doc.add_feature(
+            "mirror", self._with_lock({**v, "body": bid}) if v["plane"] == "鎖定平面" else {**v, "body": bid}))
+
+    def on_hole(self):
+        bid = self._current_id()
+        if bid is None:
+            return
+        if not self.wp:
+            QMessageBox.information(self, "孔", "請先鎖定平面(選取實體上的面後按 F3):孔從該平面往實體內鑽")
+            return
+        title, fields = SCHEMAS["hole"]
+        v = ask(title, fields, self)
+        if v:
+            self._run(lambda: self.doc.add_feature("hole", self._with_lock({**v, "body": bid})))
+
+    def on_shell(self):
+        s = self.scene
+        if s.sel_body is None:
+            QMessageBox.information(self, "抽殼", "請先用「選取模式:面」選取要開口的面(不選則做封閉空心)")
+            return
+        body = self.doc.bodies[s.sel_body]
+        title, fields = SCHEMAS["shell"]
+        v = ask(title, fields, self)
+        if v:
+            self._run(lambda: self.doc.add_feature(
+                "shell", {**v, "body": body.id, "faces": sorted(s.sel_faces)}))
 
     # --- 檢視 ---
     def on_quality(self, name):
