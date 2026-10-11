@@ -106,3 +106,66 @@ def body_properties(shape: cq.Shape) -> dict:
     return {"volume": shape.Volume(), "area": shape.Area(), "center": shape.Center(),
             "size": (bb.xlen, bb.ylen, bb.zlen),
             "min": (bb.xmin, bb.ymin, bb.zmin), "max": (bb.xmax, bb.ymax, bb.zmax)}
+
+
+# --- 半徑 / 直徑標註 ---
+def _perpendicular(n: cq.Vector) -> cq.Vector:
+    ref = cq.Vector(1, 0, 0) if abs(n.x) < 0.9 else cq.Vector(0, 1, 0)
+    return n.cross(ref).normalized()
+
+
+def circular_geometry(shape: cq.Shape, kind: str, index: int, at) -> dict:
+    """由圓/圓弧邊、圓柱面或球面(含點選位置 at)取得標註用的圓: 圓心、半徑、法向與標註方向。"""
+    at = cq.Vector(*[float(c) for c in at])
+    if kind == "edge":
+        edges = shape.Edges()
+        if index >= len(edges):
+            raise ValueError("找不到標註所指的邊(模型已改變)")
+        curve = BRepAdaptor_Curve(edges[index].wrapped)
+        if curve.GetType() != GeomAbs_Circle:
+            raise ValueError("所選的邊不是圓或圓弧")
+        c = curve.Circle()
+        center, radius, normal = _vec(c.Location()), c.Radius(), _vec(c.Axis().Direction())
+    else:
+        faces = shape.Faces()
+        if index >= len(faces):
+            raise ValueError("找不到標註所指的面(模型已改變)")
+        surf = BRepAdaptor_Surface(faces[index].wrapped)
+        t = surf.GetType()
+        if t == GeomAbs_Cylinder:
+            cyl = surf.Cylinder()
+            o, d = _vec(cyl.Axis().Location()), _vec(cyl.Axis().Direction())
+            center, radius, normal = o + d * (at - o).dot(d), cyl.Radius(), d
+        elif t == GeomAbs_Sphere:
+            sph = surf.Sphere()
+            center, radius = _vec(sph.Location()), sph.Radius()
+            v = at - center
+            normal = _perpendicular(v.normalized() if v.Length > 1e-9 else cq.Vector(0, 0, 1))
+        else:
+            raise ValueError("只支援圓/圓弧邊、圓柱面與球面")
+    v = at - center
+    v = v - normal * v.dot(normal)
+    d = (v if v.Length > 1e-9 else _perpendicular(normal)).normalized()
+    return {"center": center.toTuple(), "radius": radius, "normal": normal.toTuple(), "dir": d.toTuple()}
+
+
+def annotation_geometry(ann: dict):
+    """標註的圖形: (折線清單[numpy], 文字, 文字位置)。ann 需含 mode(半徑/直徑)與 circular_geometry 的欄位。"""
+    import numpy as np
+    c, n, d = (np.array(ann[k], float) for k in ("center", "normal", "dir"))
+    r = float(ann["radius"])
+    perp = np.cross(n, d)
+    perp = perp / (np.linalg.norm(perp) or 1.0)
+    a = r * 0.18
+
+    def arrow(tip, inward):
+        return np.array([tip - inward * a + perp * a * 0.35, tip, tip - inward * a - perp * a * 0.35])
+
+    tip = c + d * r
+    num = f"{r * (2 if ann['mode'] == '直徑' else 1):.3f}".rstrip("0").rstrip(".")
+    if ann["mode"] == "直徑":
+        tip2 = c - d * r
+        lines = [np.array([tip2, tip]), arrow(tip, -d), arrow(tip2, d)]
+        return lines, f"Ø{num}", tip + d * r * 0.15
+    lines = [np.array([c, tip]), arrow(tip, -d)]
+    return lines, f"R{num}", tip + d * r * 0.15

@@ -8,6 +8,7 @@ import cadquery as cq
 from .io_step import export_step, shapes_to_step_text
 from . import features as F
 from . import paths as PA
+from . import measure as MS
 from .ops import CREATORS, MODIFIERS, LABELS, PLACEABLE, sketch_solid, sweep_solid
 
 FORMAT_VERSION = 1
@@ -78,6 +79,12 @@ class Document:
         return [(i, n, s) for i, (n, s) in last.items() if isinstance(s, dict) and "origin" in s]
 
     @property
+    def annotations(self) -> list[tuple[int, str, dict]]:
+        """目前的半徑/直徑標註 [(編號, 名稱, 標註資料)]。"""
+        last = self.states[-1] if self.states else {}
+        return [(i, n, s["annotation"]) for i, (n, s) in last.items() if isinstance(s, dict) and "annotation" in s]
+
+    @property
     def helices(self) -> list[tuple[int, str, dict]]:
         """目前的螺旋線路徑 [(編號, 名稱, {"helix", "wp"})]。"""
         last = self.states[-1] if self.states else {}
@@ -106,6 +113,13 @@ class Document:
             name = p.get("name") or f"參考面{feat.out_ids[0]}"
             bodies[feat.out_ids[0]] = (name, F.offset_plane(
                 p["wp"], p["offset"], p.get("rx", 0), p.get("ry", 0)))
+        elif k == "annotation":
+            name, shape = bodies[p["body"]]              # 實體不存在會丟 KeyError -> 標記失敗
+            geo = MS.circular_geometry(shape, p["kind"], p["index"], p["at"])
+            if not feat.out_ids:
+                feat.out_ids = [self._alloc()]
+            bodies[feat.out_ids[0]] = (f"{p['mode']}標註{feat.out_ids[0]}",
+                                       {"annotation": {**geo, "mode": p["mode"], "body": p["body"]}})
         elif k == "helix":
             if not p.get("wp"):
                 raise ValueError("螺旋線缺少工作平面")

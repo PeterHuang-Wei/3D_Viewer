@@ -16,6 +16,9 @@ TOOLS = {
     "face": ("面積 / 面資訊", {"face"}, 1),
     "angle": ("角度", {"edge", "face"}, 2),
 }
+# 半徑/直徑標註(會存成模型的特徵,與一次性的量測不同)
+ANN_TOOLS = {"ann_radius": ("半徑標註", "半徑"), "ann_diameter": ("直徑標註", "直徑")}
+ANN_HINT = "點選圓/圓弧邊、圓柱面或球面,建立{}標註(會存進專案,隨模型更新)"
 HINTS = {
     "point": "依序點選兩個點(頂點、邊上、面上皆可;靠近頂點會自動吸附)",
     "dist": "依序點選兩個圖元(頂點/邊/面),量測兩者之間的最短距離",
@@ -49,12 +52,16 @@ class MeasureTool:
         self.buf: list[Pick] = []
         self.items: list[dict] = []        # 已完成的量測標註
         self.on_result = None              # 回呼 on_result(text)
+        self.on_annotate = None            # 回呼 on_annotate(pick, "半徑"/"直徑")
         self.status = lambda m: None
 
     # --- 外部介面 ---
     def set_tool(self, tool: str):
         self.tool, self.buf = tool, []
-        self.status(f"量測:{TOOLS[tool][0]} — {HINTS[tool]}")
+        if tool in ANN_TOOLS:
+            self.status(f"{ANN_TOOLS[tool][0]} — " + ANN_HINT.format(ANN_TOOLS[tool][1]))
+        else:
+            self.status(f"量測:{TOOLS[tool][0]} — {HINTS[tool]}")
         self.redraw()
 
     def clear(self):
@@ -72,7 +79,7 @@ class MeasureTool:
         if body is None:
             return None
         shape = sc._doc.bodies[body].shape
-        want = TOOLS[self.tool][1]
+        want = {"edge", "face"} if self.tool in ANN_TOOLS else TOOLS[self.tool][1]
         tol = sc.world_per_pixel(P, 12)
         if "vertex" in want:
             best, bd = None, tol
@@ -95,6 +102,10 @@ class MeasureTool:
         pick = self.resolve(np.asarray(P, float))
         if pick is None:
             self.status("量測:沒有點到可量測的圖元")
+            return
+        if self.tool in ANN_TOOLS:
+            if self.on_annotate:
+                self.on_annotate(pick, ANN_TOOLS[self.tool][1])
             return
         self.buf.append(pick)
         need = TOOLS[self.tool][2]

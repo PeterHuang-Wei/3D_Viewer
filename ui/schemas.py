@@ -46,6 +46,7 @@ SCHEMAS = {
         ("name", "名稱(可留空)", "text", ""),
         ("pitch", "螺距", "num", 3), ("height", "高度", "num", 12), ("radius", "起點半徑", "num", 5),
         ("taper", "錐角(度,0=圓柱)", "num", 0), ("left", "左旋", "bool", False)]),
+    "annotation": ("半徑/直徑標註", [("mode", "標註類型", "combo", ["半徑", "直徑"])]),
     "sketch_sweep": ("草圖掃掠", [("align", "自動對齊:輪廓移到路徑起點並垂直於路徑", "bool", False),
                                   ("frenet", "輪廓隨路徑轉向(Frenet)", "bool", True),
                                   ("transition", "轉角處理", "combo", ["transformed", "round", "right"]),

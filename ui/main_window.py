@@ -15,7 +15,7 @@ from core.ops import PLACEABLE
 from viewer.quality import QUALITY, DEFAULT as DEFAULT_QUALITY
 from viewer.scene import Scene, VIEWS
 from core import measure as MS
-from viewer.measure_tool import TOOLS as MS_TOOLS
+from viewer.measure_tool import TOOLS as MS_TOOLS, ANN_TOOLS
 from viewer.sketch_editor import SketchEditor, TOOLS as SK_TOOLS, CONSTRAINT_TOOLS
 from .dialogs import ask
 from .schemas import SCHEMAS
@@ -48,6 +48,11 @@ class MainWindow(QMainWindow):
             docks.append(dock)
         self.helix_list = QListWidget()                 # 螺旋線路徑清單
         self.helix_list.itemDoubleClicked.connect(lambda _: self.on_edit_helix())
+        self.ann_list = QListWidget()                   # 半徑/直徑標註清單
+        self.ann_list.itemDoubleClicked.connect(lambda _: self.on_edit_annotation())
+        adock = QDockWidget("標註(雙擊切換半徑/直徑)", self)
+        adock.setWidget(self.ann_list)
+        self.addDockWidget(Qt.LeftDockWidgetArea, adock)
         hdock = QDockWidget("螺旋線(雙擊編輯)", self)
         hdock.setWidget(self.helix_list)
         self.addDockWidget(Qt.LeftDockWidgetArea, hdock)
@@ -56,6 +61,7 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.LeftDockWidgetArea, sdock)
         self.tabifyDockWidget(docks[0], sdock)
         self.tabifyDockWidget(docks[0], hdock)
+        self.tabifyDockWidget(docks[0], adock)
         docks[0].raise_()
         self._build_measure_dock()
         self._sk = None                                 # 草圖編輯狀態
@@ -180,6 +186,14 @@ class MainWindow(QMainWindow):
         ms.addAction(self._action("所選實體的屬性(體積/表面積/質心)...", self.on_body_props))
         ms.addAction(self._action("清除畫面上的量測標註", self.on_measure_clear))
         ms.addAction(self._action("結束量測", self.on_measure_exit))
+
+        an = bar.addMenu("標註(&N)")
+        for tool, (label, _) in ANN_TOOLS.items():
+            an.addAction(self._action(label, lambda _, t=tool: self.on_annotate_tool(t)))
+        an.addSeparator()
+        an.addAction(self._action("編輯所選標註(半徑/直徑)...", self.on_edit_annotation))
+        an.addAction(self._action("刪除所選標註", self.on_delete_annotation))
+        an.addAction(self._action("結束標註", self.on_measure_exit))
 
         v = bar.addMenu("檢視(&V)")
         for name in VIEWS:
@@ -554,6 +568,7 @@ class MainWindow(QMainWindow):
         self.measure_dock.setWidget(box)
         self.addDockWidget(Qt.RightDockWidgetArea, self.measure_dock)
         self.measure_dock.hide()
+        self.scene.measure.on_annotate = self._annotate_pick
         self.scene.measure.on_result = lambda t: self.measure_text.appendPlainText(t + "\n")
         self.scene.measure.status = lambda m: self.statusBar().showMessage(m)
 
@@ -564,6 +579,48 @@ class MainWindow(QMainWindow):
         self.scene.set_mode("measure")
         self.scene.measure.set_tool(tool)
         self.measure_dock.show()
+
+    def on_annotate_tool(self, tool):
+        if not self.doc.bodies:
+            QMessageBox.information(self, "標註", "目前沒有可標註的實體")
+            return
+        self.scene.set_mode("measure")
+        self.scene.measure.set_tool(tool)
+
+    def _annotate_pick(self, pick, mode):
+        if pick.kind == "vertex":
+            self.statusBar().showMessage("標註:請點選圓/圓弧邊、圓柱面或球面")
+            return
+        params = {"body": self.doc.bodies[pick.body].id, "kind": pick.kind, "index": pick.index,
+                  "mode": mode, "at": [float(c) for c in pick.point]}
+        err = self.doc.add_feature("annotation", params)
+        if err:
+            self.statusBar().showMessage(f"標註失敗:{err}")
+            return
+        self._update(reset_camera=False)
+        self.statusBar().showMessage(f"已建立{mode}標註(存於特徵歷史,可在「標註」清單編輯/刪除)")
+
+    def _selected_annotation(self):
+        r = self.ann_list.currentRow()
+        if r < 0 or r >= len(self.doc.annotations):
+            QMessageBox.information(self, "標註", "請先在「標註」清單選取一個標註")
+            return None
+        return self.doc.annotations[r][0]
+
+    def on_edit_annotation(self):
+        aid = self._selected_annotation()
+        if aid is None:
+            return
+        k = next(i for i, f in enumerate(self.doc.features) if f.kind == "annotation" and aid in f.out_ids)
+        title, fields = SCHEMAS["annotation"]
+        v = ask("編輯:" + title, fields, self, initial=self.doc.features[k].params)
+        if v:
+            self._run(lambda: self.doc.edit_feature(k, v))
+
+    def on_delete_annotation(self):
+        aid = self._selected_annotation()
+        if aid is not None:
+            self._run(lambda: self.doc.add_feature("delete", {"body": aid}))
 
     def on_measure_exit(self):
         self.scene.set_mode("off")
@@ -943,6 +1000,8 @@ class MainWindow(QMainWindow):
         self.scene.refresh(self.doc, reset_camera and bool(self.doc.bodies))
         self.tree.clear()
         self.tree.addItems([f"{b.id}: {b.name}" for b in self.doc.bodies])
+        self.ann_list.clear()
+        self.ann_list.addItems([f"{i}: {n}" for i, n, _ in self.doc.annotations])
         self.helix_list.clear()
         self.helix_list.addItems([f"{i}: {n}" for i, n, _ in self.doc.helices])
         self.sketch_list.clear()

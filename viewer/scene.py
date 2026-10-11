@@ -13,6 +13,7 @@ from .sketch_editor import lines_poly
 from .viewcube import ViewCube
 from core import sketch2d as SK
 from core import paths as PA
+from core import measure as MS
 from .picking import EdgeIndex, face_at, nearest_body, constrain_delta
 
 COLORS = ["#8fb8de", "#e0a96d", "#9bc59d", "#c9a0dc", "#d9777a"]
@@ -123,6 +124,7 @@ class Scene:
         self._draw_planes()
         self._draw_sketches()
         self._draw_helices()
+        self._draw_annotations()
         self._draw_lock(render=False)
         self.measure.redraw()
         if reset_camera:
@@ -332,6 +334,24 @@ class Scene:
                 self.plotter.add_mesh(lines_poly(SK.polylines_global(sk["entities"], sk["wp"])),
                                       color="#ff8c00", line_width=2.5, name=f"sketchobj{sid}",
                                       pickable=False)
+
+    def _draw_annotations(self) -> None:
+        """半徑/直徑標註:引線、箭頭與數值。"""
+        if self._doc is None:
+            return
+        lines, pos, txt = [], [], []
+        for _, _, ann in self._doc.annotations:
+            ls, text, at = MS.annotation_geometry(ann)
+            lines += ls
+            pos.append(at)
+            txt.append(text)
+        if lines:
+            self.plotter.add_mesh(lines_poly(lines), color="#4fe3ff", line_width=2.5, name="annobj_lines",
+                                  pickable=False)
+            self.plotter.add_point_labels(np.array(pos), txt, name="annobj_lbl", font_size=15,
+                                          text_color="#4fe3ff", shape="rounded_rect", shape_color="#1c2530",
+                                          shape_opacity=0.8, show_points=False, always_visible=True,
+                                          pickable=False)
 
     def _draw_helices(self) -> None:
         if self._doc is None:

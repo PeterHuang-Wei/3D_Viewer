@@ -281,3 +281,48 @@ def test_measure_tools():
     assert w.scene.measure.items == []
     w.on_measure_exit()
     assert w.scene.mode == "off"
+
+
+def test_radius_diameter_annotation():
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow()
+    w.resize(1300, 850)
+    w.show()
+    for kind, params in (("box", {"x": 40, "y": 30, "z": 20}), ("cylinder", {"r": 6, "h": 40})):
+        w.doc.add_feature(kind, params)
+    w.doc.add_feature("boolean", {"op": "差集", "target": 1, "tool": 2, "keep": False})
+    w._update()
+
+    def pump(n=8):
+        for _ in range(n):
+            app.processEvents()
+            time.sleep(0.02)
+
+    pump(30)
+    w.scene.go_home()
+    pump(10)
+    pl, r = w.scene.plotter, w.scene.plotter.renderer
+
+    def click(P):
+        r.SetWorldPoint(*P, 1.0)
+        r.WorldToDisplay()
+        x, y, _ = r.GetDisplayPoint()
+        QTest.mouseClick(pl, Qt.LeftButton, Qt.NoModifier, QPoint(int(round(x)), int(round(pl.height() - y))))
+        pump(5)
+
+    w.on_annotate_tool("ann_diameter")
+    click((6, 0, 10))                                      # 孔口的圓邊
+    assert len(w.doc.annotations) == 1
+    ann = w.doc.annotations[0][2]
+    assert ann["mode"] == "直徑" and abs(ann["radius"] - 6) < 1e-6
+    click((20, -15, 10))                                   # 頂點:不建立
+    assert len(w.doc.annotations) == 1
+    w.on_annotate_tool("ann_radius")
+    click((-6, 0, 10))
+    assert [a[2]["mode"] for a in w.doc.annotations] == ["直徑", "半徑"]
+    assert w.ann_list.count() == 2
+    # 改孔徑:標註自動跟著
+    k = next(i for i, f in enumerate(w.doc.features) if f.kind == "cylinder")
+    assert w.doc.edit_feature(k, {"r": 7}) is None
+    assert abs(w.doc.annotations[0][2]["radius"] - 7) < 1e-6
+    w.on_measure_exit()
