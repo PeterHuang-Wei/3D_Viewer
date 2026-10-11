@@ -44,17 +44,30 @@ class Feature:
     params: dict = field(default_factory=dict)
     out_ids: list = field(default_factory=list)   # 建立類特徵產生的實體編號
     error: str | None = None                       # 最近一次重算的錯誤(不存檔)
+    suppressed: bool = False                       # 已抑制:重算時略過
+    name: str | None = None                        # 使用者自訂名稱
 
     @property
     def label(self) -> str:
         return LABELS.get(self.kind, self.kind)
 
+    @property
+    def title(self) -> str:
+        """歷史清單顯示的名稱(自訂名稱優先)。"""
+        return self.name or self.label
+
     def to_dict(self) -> dict:
-        return {"kind": self.kind, "params": self.params, "out_ids": self.out_ids}
+        d = {"kind": self.kind, "params": self.params, "out_ids": self.out_ids}
+        if self.suppressed:
+            d["suppressed"] = True
+        if self.name:
+            d["name"] = self.name
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "Feature":
-        return cls(d["kind"], d.get("params", {}), list(d.get("out_ids", [])))
+        return cls(d["kind"], d.get("params", {}), list(d.get("out_ids", [])),
+                   suppressed=bool(d.get("suppressed", False)), name=d.get("name"))
 
 
 class Document:
@@ -65,6 +78,7 @@ class Document:
         self.dirty = False
         self._next_id = 1
         self._undo, self._redo = [], []
+        self.rollback: int | None = None    # 回溯點:只計算到此特徵(含);None = 最新
 
     # --- 目前實體 ---
     @property
@@ -187,12 +201,19 @@ class Document:
     def recompute(self, start: int = 0) -> None:
         """從第 start 個特徵起重算;失敗的特徵會被標記並略過。"""
         del self.states[start:]
-        for feat in self.features[start:]:
+        for k, feat in enumerate(self.features[start:], start):
             base = dict(self.states[-1]) if self.states else {}
             work = dict(base)
+            if feat.suppressed or (self.rollback is not None and k > self.rollback):
+                feat.error = None                      # 被抑制或在回溯點之後:不計算
+                self.states.append(work)
+                continue
             try:
                 self._apply(feat, work)
                 feat.error = None
+            except KeyError as e:
+                feat.error = f"找不到被參照的項目(編號 {e.args[0] if e.args else '?'}):可能已被刪除、抑制,或排在此特徵之後"
+                work = base
             except Exception as e:  # noqa: BLE001
                 feat.error = str(e) or type(e).__name__
                 work = base
@@ -200,7 +221,7 @@ class Document:
 
     # --- 復原 / 重做 ---
     def _snapshot(self):
-        return copy.deepcopy(self.features), list(self.states)
+        return copy.deepcopy(self.features), list(self.states), self.rollback
 
     def _push_undo(self):
         self._undo.append(self._snapshot())
@@ -208,7 +229,7 @@ class Document:
         self.dirty = True
 
     def _restore(self, snap):
-        self.features, self.states = copy.deepcopy(snap[0]), list(snap[1])
+        self.features, self.states, self.rollback = copy.deepcopy(snap[0]), list(snap[1]), snap[2]
         self.dirty = True
 
     def can_undo(self): return bool(self._undo)
@@ -238,8 +259,11 @@ class Document:
     def add_feature(self, kind: str, params: dict) -> str | None:
         self._push_undo()
         feat = Feature(kind, params)
-        self.features.append(feat)
-        return self._commit(len(self.features) - 1, feat)
+        idx = len(self.features) if self.rollback is None else self.rollback + 1
+        self.features.insert(idx, feat)                # 回溯中:插入在回溯點之後
+        if self.rollback is not None:
+            self.rollback = idx
+        return self._commit(idx, feat)
 
     def edit_feature(self, index: int, params: dict) -> str | None:
         self._push_undo()
@@ -250,7 +274,40 @@ class Document:
     def delete_feature(self, index: int) -> None:
         self._push_undo()
         del self.features[index]
+        if self.rollback is not None and index <= self.rollback:
+            self.rollback = self.rollback - 1 if self.rollback > 0 else None
         self.recompute(index)
+
+    def set_suppressed(self, index: int, on: bool) -> None:
+        """抑制 / 取消抑制特徵(抑制後重算時略過,依賴它的特徵會標示錯誤)。"""
+        self._push_undo()
+        self.features[index].suppressed = on
+        self.recompute(index)
+
+    def rename_feature(self, index: int, name: str) -> None:
+        self._push_undo()
+        self.features[index].name = name.strip() or None
+
+    def move_feature(self, index: int, delta: int) -> bool:
+        """把特徵上移(-1)/下移(+1)並重算;超出範圍回傳 False。"""
+        j = index + delta
+        if not 0 <= j < len(self.features):
+            return False
+        self._push_undo()
+        self.features[index], self.features[j] = self.features[j], self.features[index]
+        self.recompute(min(index, j))
+        return True
+
+    def set_rollback(self, index: int | None) -> None:
+        """回溯到指定特徵之後的狀態(None 回到最新)。不納入復原堆疊。"""
+        last = len(self.features) - 1
+        if index is not None and index >= last:
+            index = None
+        old = self.rollback
+        self.rollback = index
+        a = last if old is None else old
+        b = last if index is None else index
+        self.recompute(min(a, b) + 1 if self.features else 0)
 
     # --- 檔案 ---
     def import_step(self, path: str) -> str | None:
@@ -275,7 +332,7 @@ class Document:
 
     def save_project(self, path: str) -> None:
         data = {"app": "3D Viewer", "version": FORMAT_VERSION,
-                "features": [f.to_dict() for f in self.features]}
+                "features": [f.to_dict() for f in self.features], "rollback": self.rollback}
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
         self.path, self.dirty = path, False
@@ -287,6 +344,7 @@ class Document:
             raise ValueError("專案檔版本過新,請更新程式")
         self.clear()
         self.features = [Feature.from_dict(d) for d in data["features"]]
+        self.rollback = data.get("rollback")
         ids = [i for f in self.features for i in f.out_ids]
         self._next_id = max(ids, default=0) + 1
         self.recompute(0)

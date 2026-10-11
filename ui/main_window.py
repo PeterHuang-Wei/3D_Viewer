@@ -2,10 +2,11 @@
 import os
 
 from PyQt5.QtCore import Qt, QSettings
+from PyQt5.QtGui import QBrush, QColor, QFont
 from PyQt5.QtWidgets import (
-    QMainWindow, QAction, QActionGroup, QFileDialog, QMessageBox, QListWidget,
+    QMainWindow, QAction, QActionGroup, QFileDialog, QMessageBox, QListWidget, QListWidgetItem,
     QDockWidget, QLabel, QToolBar, QLineEdit, QCheckBox, QDoubleSpinBox,
-    QInputDialog, QPushButton, QWidget, QVBoxLayout, QPlainTextEdit, QApplication,
+    QInputDialog, QMenu, QPushButton, QWidget, QVBoxLayout, QPlainTextEdit, QApplication,
 )
 
 from core import features as F
@@ -38,6 +39,8 @@ class MainWindow(QMainWindow):
         self.tree = QListWidget()                       # 目前實體
         self.history = QListWidget()                    # 特徵歷史
         self.history.itemDoubleClicked.connect(lambda _: self.on_edit_feature())
+        self.history.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.history.customContextMenuRequested.connect(self._history_menu)
         self.sketch_list = QListWidget()                # 草圖清單
         self.sketch_list.itemDoubleClicked.connect(lambda _: self.on_edit_sketch())
         docks = []
@@ -120,6 +123,13 @@ class MainWindow(QMainWindow):
         e.addSeparator()
         e.addAction(self._action("編輯所選特徵參數...", self.on_edit_feature, "F2"))
         e.addAction(self._action("刪除所選特徵", self.on_delete_feature))
+        e.addSeparator()
+        e.addAction(self._action("抑制 / 取消抑制所選特徵", self.on_suppress_feature, "Ctrl+Shift+X"))
+        e.addAction(self._action("重新命名所選特徵...", self.on_rename_feature))
+        e.addAction(self._action("上移所選特徵", lambda _=None: self.on_move_feature(-1)))
+        e.addAction(self._action("下移所選特徵", lambda _=None: self.on_move_feature(1)))
+        e.addAction(self._action("回溯到所選特徵之後", self.on_rollback))
+        e.addAction(self._action("回到最新(解除回溯)", self.on_rollback_end))
 
         c = bar.addMenu("建立(&C)")
         for kind in ("box", "cylinder", "sphere", "cone", "torus"):
@@ -344,7 +354,7 @@ class MainWindow(QMainWindow):
         self._update(reset_camera=False)
 
     def _report_errors(self):
-        bad = [f"{f.label}: {f.error}" for f in self.doc.features if f.error]
+        bad = [f"{f.title}: {f.error}" for f in self.doc.features if f.error]
         if bad:
             QMessageBox.warning(self, "部分特徵重算失敗", "\n".join(bad))
 
@@ -466,6 +476,67 @@ class MainWindow(QMainWindow):
             label = "反向(朝實體外)" if kind == "thread_hole" else "反向(朝平面法向反側,如往實體內)"
             fields.append(("flip", label, "bool", False))
         return title + "(鎖定平面)", fields
+
+    # --- 特徵:抑制 / 重新命名 / 排序 / 回溯 ---
+    def _selected_feature(self):
+        k = self.history.currentRow()
+        if k < 0 or k >= len(self.doc.features):
+            QMessageBox.information(self, "提示", "請先在特徵歷史選取一個特徵")
+            return None
+        return k
+
+    def _keep_row(self, k):
+        self._update(reset_camera=False)
+        if 0 <= k < self.history.count():
+            self.history.setCurrentRow(k)
+
+    def on_suppress_feature(self):
+        k = self._selected_feature()
+        if k is not None:
+            self.doc.set_suppressed(k, not self.doc.features[k].suppressed)
+            self._keep_row(k)
+
+    def on_rename_feature(self):
+        k = self._selected_feature()
+        if k is None:
+            return
+        name, ok = QInputDialog.getText(self, "重新命名特徵", "名稱(留空恢復預設):", text=self.doc.features[k].title)
+        if ok:
+            self.doc.rename_feature(k, name)
+            self._keep_row(k)
+
+    def on_move_feature(self, delta):
+        k = self._selected_feature()
+        if k is not None and self.doc.move_feature(k, delta):
+            self._keep_row(k + delta)
+            self._report_errors()
+
+    def on_rollback(self):
+        k = self._selected_feature()
+        if k is not None:
+            self.doc.set_rollback(k)
+            self._keep_row(k)
+
+    def on_rollback_end(self):
+        self.doc.set_rollback(None)
+        self._update(reset_camera=False)
+
+    def _history_menu(self, pos):
+        if self.history.itemAt(pos) is None:
+            return
+        self.history.setCurrentRow(self.history.row(self.history.itemAt(pos)))
+        f = self.doc.features[self.history.currentRow()]
+        m = QMenu(self)
+        for text, slot in (("編輯參數...", self.on_edit_feature),
+                           ("重新命名...", self.on_rename_feature),
+                           ("取消抑制" if f.suppressed else "抑制", self.on_suppress_feature),
+                           ("回溯到此特徵之後", self.on_rollback),
+                           ("回到最新(解除回溯)", self.on_rollback_end),
+                           ("上移", lambda: self.on_move_feature(-1)),
+                           ("下移", lambda: self.on_move_feature(1)),
+                           ("刪除", self.on_delete_feature)):
+            m.addAction(text).triggered.connect(lambda _=False, s=slot: s())
+        m.exec_(self.history.mapToGlobal(pos))
 
     # --- 建立 / 修改 ---
     def on_create(self, kind):
@@ -1009,8 +1080,17 @@ class MainWindow(QMainWindow):
         self.planes_list.clear()
         self.planes_list.addItems([f"{i}: {n}" for i, n, _ in self.doc.planes])
         self.history.clear()
+        rb = self.doc.rollback
         for k, f in enumerate(self.doc.features):
-            self.history.addItem(f"{k + 1}. {f.label}" + (f"  ⚠ {f.error}" if f.error else ""))
+            text = f"{k + 1}. {f.title}" + ("  [已抑制]" if f.suppressed else "") \
+                + (f"  ⚠ {f.error}" if f.error else "") + ("   ◀ 回溯點" if rb == k else "")
+            item = QListWidgetItem(text)
+            if f.suppressed or (rb is not None and k > rb):
+                item.setForeground(QBrush(QColor("#8a8a8a")))
+                font = QFont()
+                font.setItalic(True)
+                item.setFont(font)
+            self.history.addItem(item)
         self.act_undo.setEnabled(self.doc.can_undo())
         self.act_redo.setEnabled(self.doc.can_redo())
         name = os.path.basename(self.doc.path) if self.doc.path else "未命名"

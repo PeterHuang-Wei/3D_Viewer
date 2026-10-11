@@ -326,3 +326,29 @@ def test_radius_diameter_annotation():
     assert w.doc.edit_feature(k, {"r": 7}) is None
     assert abs(w.doc.annotations[0][2]["radius"] - 7) < 1e-6
     w.on_measure_exit()
+
+
+def test_history_suppress_rollback_ui():
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow()
+    w.show()
+    for kind, params in (("box", {"x": 10, "y": 10, "z": 10}), ("cylinder", {"r": 2, "h": 30})):
+        w.doc.add_feature(kind, params)
+    w.doc.add_feature("boolean", {"op": "差集", "target": 1, "tool": 2, "keep": False})
+    w._update()
+    assert len(w.doc.bodies) == 1
+    w.history.setCurrentRow(2)
+    w.on_suppress_feature()
+    assert len(w.doc.bodies) == 2 and "[已抑制]" in w.history.item(2).text()
+    w.on_suppress_feature()
+    assert len(w.doc.bodies) == 1
+    w.history.setCurrentRow(1)
+    w.on_rollback()
+    assert len(w.doc.bodies) == 2 and "回溯點" in w.history.item(1).text()
+    w.on_rollback_end()
+    assert w.doc.rollback is None and len(w.doc.bodies) == 1
+    from PyQt5.QtWidgets import QMessageBox
+    QMessageBox.warning = staticmethod(lambda *a, **k: None)        # 移動後布林會失敗並彈出警告,測試中略過
+    w.history.setCurrentRow(1)
+    w.on_move_feature(1)
+    assert w.doc.features[2].kind == "cylinder" and "找不到被參照" in w.doc.features[1].error
