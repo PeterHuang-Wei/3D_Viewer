@@ -6,6 +6,7 @@ import numpy as np
 import pyvista as pv
 
 from core import measure as M
+from core.numfmt import fixed
 from .picking import face_at, nearest_body
 from .sketch_editor import lines_poly
 
@@ -40,9 +41,7 @@ class Pick:
 
 
 def _fmt(v: float) -> str:
-    if abs(v) < 5e-4:
-        v = 0.0                                  # 避免顯示 -0
-    return f"{v:.3f}".rstrip("0").rstrip(".") if abs(v) < 1e6 else f"{v:.4g}"
+    return fixed(v)                              # 固定小數位數(預設 .3f)
 
 
 class MeasureTool:

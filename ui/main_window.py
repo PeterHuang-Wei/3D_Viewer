@@ -17,6 +17,8 @@ from core.ops import PLACEABLE
 from viewer.quality import QUALITY, DEFAULT as DEFAULT_QUALITY
 from viewer.scene import Scene, VIEWS
 from core import measure as MS
+from core import numfmt
+from core.numfmt import fixed
 from viewer.measure_tool import TOOLS as MS_TOOLS, ANN_TOOLS
 from viewer.sketch_editor import SketchEditor, TOOLS as SK_TOOLS, CONSTRAINT_TOOLS
 from .dialogs import ask
@@ -85,6 +87,7 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.lock_label)
         self.scene.on_selection = self._show_selection
         self.scene.on_move = self._on_drag_move
+        numfmt.set_precision(int(QSettings("3DViewer", "3DViewer").value("precision", 3)))   # 量測精度預設 .3f
         self.quality_actions = {}
         saved = QSettings("3DViewer", "3DViewer").value("quality", DEFAULT_QUALITY)
         if saved in QUALITY:
@@ -205,6 +208,7 @@ class MainWindow(QMainWindow):
             ms.addAction(self._action(label, lambda _, t=tool: self.on_measure(t)))
         ms.addSeparator()
         ms.addAction(self._action("所選實體的屬性(體積/表面積/質心)...", self.on_body_props))
+        ms.addAction(self._action("量測小數位數...", self.on_precision))
         ms.addAction(self._action("清除畫面上的量測標註", self.on_measure_clear))
         ms.addAction(self._action("結束量測", self.on_measure_exit))
 
@@ -778,6 +782,14 @@ class MainWindow(QMainWindow):
         if aid is not None:
             self._run(lambda: self.doc.add_feature("delete", {"body": aid}))
 
+    def on_precision(self):
+        n, ok = QInputDialog.getInt(self, "量測小數位數", "小數位數(預設 3,即 .3f):", numfmt.PRECISION, 0, 8)
+        if ok:
+            numfmt.set_precision(n)
+            QSettings("3DViewer", "3DViewer").setValue("precision", n)
+            self._update(reset_camera=False)
+            self.statusBar().showMessage(f"量測與尺寸顯示改為小數 {n} 位(新的量測才套用)")
+
     def on_measure_exit(self):
         self.scene.set_mode("off")
         self.scene.measure.cancel()
@@ -801,11 +813,12 @@ class MainWindow(QMainWindow):
         body = next(b for b in self.doc.bodies if b.id == bid)
         p = MS.body_properties(body.shape)
         c = p["center"]
-        text = (f"實體:{body.name}\n體積:{p['volume']:.4f} mm³\n表面積:{p['area']:.4f} mm²\n"
-                f"質心:({c.x:.4f}, {c.y:.4f}, {c.z:.4f})\n"
-                f"外型尺寸(X×Y×Z):{p['size'][0]:.4f} × {p['size'][1]:.4f} × {p['size'][2]:.4f} mm\n"
-                f"邊界框:({p['min'][0]:.3f}, {p['min'][1]:.3f}, {p['min'][2]:.3f}) ~ "
-                f"({p['max'][0]:.3f}, {p['max'][1]:.3f}, {p['max'][2]:.3f})")
+        f = fixed
+        text = (f"實體:{body.name}\n體積:{f(p['volume'])} mm³\n表面積:{f(p['area'])} mm²\n"
+                f"質心:({f(c.x)}, {f(c.y)}, {f(c.z)})\n"
+                f"外型尺寸(X×Y×Z):{f(p['size'][0])} × {f(p['size'][1])} × {f(p['size'][2])} mm\n"
+                f"邊界框:({f(p['min'][0])}, {f(p['min'][1])}, {f(p['min'][2])}) ~ "
+                f"({f(p['max'][0])}, {f(p['max'][1])}, {f(p['max'][2])})")
         self.measure_text.appendPlainText(text + "\n")
         self.measure_dock.show()
         QMessageBox.information(self, "實體屬性", text)

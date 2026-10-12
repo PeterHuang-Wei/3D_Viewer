@@ -62,3 +62,19 @@ def test_body_props():
     p = M.body_properties(box(2, 3, 4))
     assert abs(p["volume"] - 24) < 1e-9 and abs(p["area"] - 52) < 1e-9
     assert p["size"] == pytest.approx((2, 3, 4))
+
+
+def test_default_precision_is_3_decimals():
+    from core import numfmt
+    assert numfmt.PRECISION == 3
+    assert numfmt.fixed(50) == "50.000" and numfmt.fixed(37.69911184) == "37.699" and numfmt.fixed(-1e-9) == "0.000"
+    numfmt.set_precision(1)
+    try:
+        assert numfmt.fixed(2.25) in ("2.2", "2.3") and numfmt.fixed(7) == "7.0"
+    finally:
+        numfmt.set_precision(3)
+    numfmt.set_precision(99)
+    assert numfmt.PRECISION == 8
+    numfmt.set_precision(3)
+    ann = {"center": (0, 0, 0), "radius": 6.125, "normal": (0, 0, 1), "dir": (1, 0, 0), "mode": "半徑"}
+    assert M.annotation_geometry(ann)[1] == "R6.125"
