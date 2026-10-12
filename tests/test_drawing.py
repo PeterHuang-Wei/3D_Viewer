@@ -67,3 +67,63 @@ def test_export_all_formats(tmp_path):
     assert img.width() == int(420 * 60 / 25.4)
     with pytest.raises(ValueError):
         export_sheet(sh, str(tmp_path / "d.xyz"))
+
+
+def holed():
+    return (cq.Workplane().box(60, 40, 30).faces(">Z").workplane().pushPoints([(-15, 0), (15, 8)])
+            .cboreHole(8, 14, 5).edges("|Z").edges("<X").fillet(5).val())
+
+
+def test_section_view_hatch_and_marker():
+    sh = D.build_sheet([holed()], section={"axis": "XZ", "offset": 0.0})
+    sec = next(v for v in sh.views if v.name == "剖視")
+    assert sec.label == "A-A" and sec.hidden == [] and len(sec.hatch) > 20
+    assert not any(v.name == "等角視" for v in sh.views)                   # 剖視優先於等角視
+    assert any(i["t"] == "text" and i["s"] == "A" for i in sh.markers) and len(sh.markers) >= 9
+    # 剖面線都在剖面輪廓內,且為 45°
+    (x0, y0), (x1, y1) = sec.bbox
+    for seg in sec.hatch:
+        assert x0 - 1e-6 <= seg[:, 0].min() and seg[:, 0].max() <= x1 + 1e-6 and y0 - 1e-6 <= seg[:, 1].min() and seg[:, 1].max() <= y1 + 1e-6
+        d = seg[1] - seg[0]
+        assert abs(abs(d[0]) - abs(d[1])) < 1e-6
+    # 孔的位置沒有剖面線:剖切在 y=0,通過左側孔(x=-15,孔徑 8)
+    hole_x = (-15 - 4, -15 + 4)
+    cx = sec.bbox[0][0]
+    for seg in sec.hatch:
+        mid_x = (seg[0][0] + seg[1][0]) / 2
+        if hole_x[0] + 0.3 < mid_x < hole_x[1] - 0.3 and (seg[0][1] + seg[1][1]) / 2 < 5:      # 孔下半(螺栓孔)區域不應有線
+            raise AssertionError("孔內不應有剖面線")
+    # 其他剖切方向與位置
+    for axis in ("YZ", "XY"):
+        s2 = D.build_sheet([holed()], section={"axis": axis, "offset": 0.0})
+        assert next(v for v in s2.views if v.name == "剖視").hatch
+    with pytest.raises(ValueError):
+        D.build_sheet([holed()], section={"axis": "XZ", "offset": 500.0})
+    no_iso = D.build_sheet([holed()], views=("前視", "上視", "右視", "等角視"))
+    assert any(v.name == "等角視" for v in no_iso.views)
+
+
+def test_more_dimensions():
+    sh = D.build_sheet([holed()], chain=True)
+    texts = [i["s"] for i in D.sheet_items(sh) if i["t"] == "text"]
+    assert "R5" in texts                                                      # 圓角半徑
+    assert "Ø14" in texts and "Ø8" in texts                                   # 沉頭孔兩個直徑
+    assert "15" in texts and "45" in texts                                    # 孔中心 X(自左邊量起)
+    assert "28" in texts and "20" in texts                                    # 孔中心 Y(自下邊量起)
+    assert "5" in texts and "55" in texts                                     # 分段尺寸
+    plain = [i["s"] for i in D.sheet_items(D.build_sheet([holed()], hole_pos=False, radii=False))
+             if i["t"] == "text"]
+    assert "R5" not in plain and "45" not in plain and "55" not in plain
+    assert D.hatch_segments([], 1.0) == []
+    import numpy as np
+    segs = D.hatch_segments([np.array([[0, 0], [10, 0], [0, 10]], float)], 2.0)
+    assert segs and all(abs(abs(s_[1][0] - s_[0][0]) - abs(s_[1][1] - s_[0][1])) < 1e-9 for s_ in segs)
+
+
+def test_export_section_dxf(tmp_path):
+    import ezdxf
+    sh = D.build_sheet([holed()], section={"axis": "XZ", "offset": 0.0})
+    p = str(tmp_path / "s.dxf")
+    D.export_dxf(sh, p)
+    layers = {e.dxf.layer for e in ezdxf.readfile(p).modelspace()}
+    assert "HATCH" in layers and "DIM" in layers

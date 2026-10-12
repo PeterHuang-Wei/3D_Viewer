@@ -10,6 +10,7 @@ STYLES = {  # 樣式 -> (顏色, 線寬 mm, 線型)
     "visible": ("#000000", 0.45, Qt.SolidLine), "hidden": ("#6a6a6a", 0.2, Qt.DashLine),
     "dim": ("#0a5a9c", 0.18, Qt.SolidLine), "center": ("#b00020", 0.15, Qt.DashDotLine),
     "frame": ("#000000", 0.7, Qt.SolidLine), "thin": ("#000000", 0.25, Qt.SolidLine),
+    "hatch": ("#444444", 0.12, Qt.SolidLine),
 }
 
 

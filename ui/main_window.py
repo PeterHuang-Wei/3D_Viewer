@@ -366,6 +366,10 @@ class MainWindow(QMainWindow):
             ("front", "前視圖", "bool", True), ("top", "上視圖", "bool", True), ("right", "右視圖", "bool", True),
             ("iso", "等角視", "bool", True), ("hidden", "顯示隱藏線(虛線)", "bool", True),
             ("dims", "標註總尺寸與孔徑", "bool", True),
+            ("hole_pos", "孔位置座標尺寸(自視圖左下角量起)", "bool", True),
+            ("radii", "圓角半徑 R 標註", "bool", True), ("chain", "分段(鏈式)尺寸", "bool", False),
+            ("section", "剖視圖(與等角視共用右上位置,剖視優先)", "combo", list(DR.SECTION_LABELS)),
+            ("sec_off", "剖切位置(相對零件中心,mm)", "num", 0),
             ("title", "圖名", "text", f"{name} 工程圖"), ("part", "零件名稱", "text", name),
             ("author", "設計者", "text", "")], self, initial={"paper": "A3"})
         if not v:
@@ -375,9 +379,12 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "工程圖", "請至少選一個視圖")
             return
         try:
+            axis = DR.SECTION_LABELS[v["section"]]
             sheet = DR.build_sheet(shapes, views, v["paper"], v["proj"] == "第三角法", v["scale"],
                                    v["hidden"], v["dims"], {"title": v["title"], "part": v["part"],
-                                                           "author": v["author"], "paper": v["paper"]})
+                                                           "author": v["author"], "paper": v["paper"]},
+                                   section={"axis": axis, "offset": v["sec_off"]} if axis else None,
+                                   hole_pos=v["hole_pos"], radii=v["radii"], chain=v["chain"])
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "工程圖", f"產生失敗:{e}")
             return

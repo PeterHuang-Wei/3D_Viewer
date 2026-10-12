@@ -454,7 +454,8 @@ def test_drawing_dialog_builds_sheet(monkeypatch):
     w._update()
     monkeypatch.setattr(mw, "ask", lambda t, f, p=None, initial=None: {
         "paper": "A4", "proj": "第一角法", "scale": "自動", "front": True, "top": True, "right": False,
-        "iso": False, "hidden": True, "dims": True, "title": "T", "part": "P", "author": "A"})
+        "iso": False, "hidden": True, "dims": True, "hole_pos": True, "radii": True, "chain": False,
+        "section": "前剖(XZ 平面)", "sec_off": 0.0, "title": "T", "part": "P", "author": "A"})
     shown = {}
     monkeypatch.setattr(QDialog, "exec_", lambda self: shown.setdefault("title", self.windowTitle()) and 0)
     w.on_drawing()
