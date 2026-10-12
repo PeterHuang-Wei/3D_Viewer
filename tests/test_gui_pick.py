@@ -265,17 +265,17 @@ def test_measure_tools():
     w.on_measure("point")                              # 兩個可見頂點:對角線 50
     click((20, -15, 10))
     click((-20, 15, 10))
-    assert "點到點距離 = 50.000 mm" in w.measure_text.toPlainText()
+    assert "點到點距離 = 50 mm" in w.measure_text.toPlainText()
     w.on_measure("face")
     click((0, 0, 10))
-    assert "面積 = 1200.000 mm²" in w.measure_text.toPlainText()
+    assert "面積 = 1200 mm²" in w.measure_text.toPlainText()
     w.on_measure("angle")                              # 頂面與右面(+X)
     click((5, 5, 10))
     click((20, 2, 3))
-    assert "角度(面-面) = 90.000°" in w.measure_text.toPlainText()
+    assert "角度(面-面) = 90°" in w.measure_text.toPlainText()
     w.on_measure("edge")
     click((20, -15, 0))
-    assert "長度 = 20.000 mm" in w.measure_text.toPlainText()
+    assert "長度 = 20 mm" in w.measure_text.toPlainText()
     assert len(w.scene.measure.items) == 4
     w.on_measure_clear()
     assert w.scene.measure.items == []

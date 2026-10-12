@@ -64,17 +64,23 @@ def test_body_props():
     assert p["size"] == pytest.approx((2, 3, 4))
 
 
-def test_default_precision_is_3_decimals():
+def test_number_format_trims_to_at_most_3_decimals():
     from core import numfmt
+    f = numfmt.fmtn
     assert numfmt.PRECISION == 3
-    assert numfmt.fixed(50) == "50.000" and numfmt.fixed(37.69911184) == "37.699" and numfmt.fixed(-1e-9) == "0.000"
+    assert f(50) == "50" and f(50.0) == "50" and f(-7.0) == "-7" and f(1200) == "1200"       # 整數維持整數
+    assert f(0.1) == "0.1" and f(0.2) == "0.2" and f(2.5) == "2.5" and f(0.25) == "0.25"     # 有幾位顯示幾位
+    assert f(0.123) == "0.123" and f(37.69911184) == "37.699" and f(1.23456) == "1.235"       # 超過 3 位四捨五入到 3 位
+    assert f(5.0004) == "5" and f(-1e-9) == "0" and f(10.10) == "10.1"
     numfmt.set_precision(1)
     try:
-        assert numfmt.fixed(2.25) in ("2.2", "2.3") and numfmt.fixed(7) == "7.0"
+        assert f(2.26) == "2.3" and f(7) == "7" and f(0.04) == "0"
     finally:
         numfmt.set_precision(3)
     numfmt.set_precision(99)
     assert numfmt.PRECISION == 8
     numfmt.set_precision(3)
-    ann = {"center": (0, 0, 0), "radius": 6.125, "normal": (0, 0, 1), "dir": (1, 0, 0), "mode": "半徑"}
-    assert M.annotation_geometry(ann)[1] == "R6.125"
+    base = {"center": (0, 0, 0), "normal": (0, 0, 1), "dir": (1, 0, 0)}
+    assert M.annotation_geometry({**base, "radius": 6.125, "mode": "半徑"})[1] == "R6.125"
+    assert M.annotation_geometry({**base, "radius": 6.0, "mode": "直徑"})[1] == "Ø12"
+    assert M.annotation_geometry({**base, "radius": 2.55, "mode": "半徑"})[1] == "R2.55"

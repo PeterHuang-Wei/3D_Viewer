@@ -18,7 +18,7 @@ from viewer.quality import QUALITY, DEFAULT as DEFAULT_QUALITY
 from viewer.scene import Scene, VIEWS
 from core import measure as MS
 from core import numfmt
-from core.numfmt import fixed
+from core.numfmt import fmtn
 from viewer.measure_tool import TOOLS as MS_TOOLS, ANN_TOOLS
 from viewer.sketch_editor import SketchEditor, TOOLS as SK_TOOLS, CONSTRAINT_TOOLS
 from .dialogs import ask
@@ -783,7 +783,7 @@ class MainWindow(QMainWindow):
             self._run(lambda: self.doc.add_feature("delete", {"body": aid}))
 
     def on_precision(self):
-        n, ok = QInputDialog.getInt(self, "量測小數位數", "小數位數(預設 3,即 .3f):", numfmt.PRECISION, 0, 8)
+        n, ok = QInputDialog.getInt(self, "量測小數位數", "最多顯示的小數位數(預設 3,即 .3f;整數仍顯示為整數):", numfmt.PRECISION, 0, 8)
         if ok:
             numfmt.set_precision(n)
             QSettings("3DViewer", "3DViewer").setValue("precision", n)
@@ -813,7 +813,7 @@ class MainWindow(QMainWindow):
         body = next(b for b in self.doc.bodies if b.id == bid)
         p = MS.body_properties(body.shape)
         c = p["center"]
-        f = fixed
+        f = fmtn
         text = (f"實體:{body.name}\n體積:{f(p['volume'])} mm³\n表面積:{f(p['area'])} mm²\n"
                 f"質心:({f(c.x)}, {f(c.y)}, {f(c.z)})\n"
                 f"外型尺寸(X×Y×Z):{f(p['size'][0])} × {f(p['size'][1])} × {f(p['size'][2])} mm\n"

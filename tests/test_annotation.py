@@ -34,9 +34,9 @@ def test_geometry_edge_and_face():
 def test_annotation_geometry_text():
     ann = {"center": (0, 0, 0), "radius": 6.0, "normal": (0, 0, 1), "dir": (1, 0, 0), "mode": "直徑"}
     lines, text, pos = MS.annotation_geometry(ann)
-    assert text == "Ø12.000" and abs(lines[0][0][0] + 6) < 1e-9 and abs(lines[0][1][0] - 6) < 1e-9
+    assert text == "Ø12" and abs(lines[0][0][0] + 6) < 1e-9 and abs(lines[0][1][0] - 6) < 1e-9
     lines, text, pos = MS.annotation_geometry({**ann, "mode": "半徑"})
-    assert text == "R6.000" and abs(lines[0][0][0]) < 1e-9
+    assert text == "R6" and abs(lines[0][0][0]) < 1e-9
 
 
 def test_annotation_feature_follows_geometry_and_fails_safely():

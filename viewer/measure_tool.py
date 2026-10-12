@@ -6,7 +6,7 @@ import numpy as np
 import pyvista as pv
 
 from core import measure as M
-from core.numfmt import fixed
+from core.numfmt import fmtn
 from .picking import face_at, nearest_body
 from .sketch_editor import lines_poly
 
@@ -41,7 +41,7 @@ class Pick:
 
 
 def _fmt(v: float) -> str:
-    return fixed(v)                              # 固定小數位數(預設 .3f)
+    return fmtn(v)                              # 固定小數位數(預設 .3f)
 
 
 class MeasureTool:

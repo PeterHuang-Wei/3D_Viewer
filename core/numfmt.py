@@ -1,4 +1,5 @@
-"""量測/尺寸數值的顯示格式:固定小數位數(預設 3 位,即 .3f),可由設定調整。"""
+"""量測/尺寸數值的顯示格式:最多顯示 PRECISION 位小數(預設 3,即 .3f),並去掉多餘的 0。
+整數維持整數(50),0.1 顯示 0.1,0.25 顯示 0.25,0.1234 顯示 0.123。"""
 
 PRECISION = 3
 
@@ -8,9 +9,9 @@ def set_precision(n: int) -> None:
     PRECISION = max(0, min(8, int(n)))
 
 
-def fixed(v: float) -> str:
-    """固定小數位數(預設 .3f);避免顯示 -0.000。"""
+def fmtn(v: float) -> str:
     p = PRECISION
     if abs(v) < 0.5 * 10 ** (-p):
-        v = 0.0
-    return f"{v:.{p}f}"
+        return "0"                               # 避免 -0
+    s = f"{v:.{p}f}"
+    return s.rstrip("0").rstrip(".") if "." in s else s

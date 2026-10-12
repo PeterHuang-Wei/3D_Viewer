@@ -8,7 +8,7 @@ import pyvista as pv
 from core import features as F
 from core import sketch2d as S
 from core import sketch_solver as K
-from core.numfmt import fixed
+from core.numfmt import fmtn
 
 TOOLS = {
     "select": "選取", "line": "線", "rect": "矩形", "circle": "圓", "arc": "圓弧(三點)",
@@ -495,7 +495,7 @@ class SketchEditor:
             names.append(tag + (f".{r[1]}" if len(r) == 2 else ""))
         text = f"{K.NAMES[c['t']]} [{', '.join(names)}]"
         if c["t"] in K.DIMENSIONAL:
-            text += f" = {fixed(c['v'])}" + ("°" if c["t"] == "angle" else "")
+            text += f" = {fmtn(c['v'])}" + ("°" if c["t"] == "angle" else "")
         return text
 
     def _extent(self) -> float:
@@ -519,25 +519,25 @@ class SketchEditor:
             n = (-(b[1] - a[1]) / L * off, (b[0] - a[0]) / L * off)
             a2, b2 = (a[0] + n[0], a[1] + n[1]), (b[0] + n[0], b[1] + n[1])
             return ([[a, (a2[0] + n[0] * .2, a2[1] + n[1] * .2)], [b, (b2[0] + n[0] * .2, b2[1] + n[1] * .2)], [a2, b2]],
-                    fixed(v), ((a2[0] + b2[0]) / 2 + n[0] * .3, (a2[1] + b2[1]) / 2 + n[1] * .3))
+                    fmtn(v), ((a2[0] + b2[0]) / 2 + n[0] * .3, (a2[1] + b2[1]) / 2 + n[1] * .3))
         if t in ("hdist", "vdist"):
             a, b = P(r[0]), P(r[1])
             if t == "hdist":
                 y = max(a[1], b[1]) + off
                 return ([[a, (a[0], y + off * .2)], [b, (b[0], y + off * .2)], [(a[0], y), (b[0], y)]],
-                        fixed(v), ((a[0] + b[0]) / 2, y + off * .3))
+                        fmtn(v), ((a[0] + b[0]) / 2, y + off * .3))
             x = max(a[0], b[0]) + off
             return ([[a, (x + off * .2, a[1])], [b, (x + off * .2, b[1])], [(x, a[1]), (x, b[1])]],
-                    fixed(v), (x + off * .3, (a[1] + b[1]) / 2))
+                    fmtn(v), (x + off * .3, (a[1] + b[1]) / 2))
         if t in ("radius", "diameter"):
             e = self._ent(r[0][0])
             (cx, cy), R = e["c"], e["r"]
             u = (math.cos(math.radians(45)), math.sin(math.radians(45)))
             if t == "radius":
                 q = (cx + R * u[0], cy + R * u[1])
-                return ([[(cx, cy), q]], "R" + fixed(v), (q[0] + off * .4 * u[0], q[1] + off * .4 * u[1]))
+                return ([[(cx, cy), q]], "R" + fmtn(v), (q[0] + off * .4 * u[0], q[1] + off * .4 * u[1]))
             q1, q2 = (cx - R * u[0], cy - R * u[1]), (cx + R * u[0], cy + R * u[1])
-            return ([[q1, q2]], "D" + fixed(v), (q2[0] + off * .4 * u[0], q2[1] + off * .4 * u[1]))
+            return ([[q1, q2]], "D" + fmtn(v), (q2[0] + off * .4 * u[0], q2[1] + off * .4 * u[1]))
         if t == "angle":
             (a1, a2), (b1, b2) = [(self._xy(self._ent(q[0]), "p1"), self._xy(self._ent(q[0]), "p2")) for q in r]
             d1, d2 = (a2[0] - a1[0], a2[1] - a1[1]), (b2[0] - b1[0], b2[1] - b1[1])
@@ -552,7 +552,7 @@ class SketchEditor:
             arc_pts = [(vx + R * math.cos(th1 + diff * k / 24), vy + R * math.sin(th1 + diff * k / 24))
                        for k in range(25)]
             mid = th1 + diff / 2
-            return [arc_pts], fixed(v) + "°", (vx + R * 1.3 * math.cos(mid), vy + R * 1.3 * math.sin(mid))
+            return [arc_pts], fmtn(v) + "°", (vx + R * 1.3 * math.cos(mid), vy + R * 1.3 * math.sin(mid))
         return [], "", (0, 0)
 
     def _marker_pos(self, c):

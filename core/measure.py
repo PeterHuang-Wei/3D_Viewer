@@ -2,7 +2,7 @@
 import math
 
 import cadquery as cq
-from .numfmt import fixed
+from .numfmt import fmtn
 from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 from OCP.GeomAbs import (GeomAbs_Circle, GeomAbs_Cone, GeomAbs_Cylinder, GeomAbs_Line,
@@ -163,7 +163,7 @@ def annotation_geometry(ann: dict):
         return np.array([tip - inward * a + perp * a * 0.35, tip, tip - inward * a - perp * a * 0.35])
 
     tip = c + d * r
-    num = fixed(r * (2 if ann["mode"] == "直徑" else 1))
+    num = fmtn(r * (2 if ann["mode"] == "直徑" else 1))
     if ann["mode"] == "直徑":
         tip2 = c - d * r
         lines = [np.array([tip2, tip]), arrow(tip, -d), arrow(tip2, d)]
