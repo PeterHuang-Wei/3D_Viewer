@@ -253,5 +253,56 @@ def set_display(unit: str | None = None, precision: int | None = None) -> dict:
     return _call("set_display", unit=unit, precision=precision)
 
 
+@app.tool()
+def lock_plane(plane: str | int | dict | None = None) -> dict:
+    """鎖定工作平面(等同 F3)。plane: XY/XZ/YZ、參考面編號、{"body":id,"face":索引}(實體的平面);
+    不給則解除。鎖定後 create_sketch(plane="locked")、add_feature(on_plane="locked") 皆以此平面為準。
+    on_plane / plane 也可直接傳 {"body","face"} 或 "locked"。"""
+    return _call("lock_plane", plane=plane)
+
+
+@app.tool()
+def set_section(plane: str | int | dict | None = None, offset: float = 0.0, flip: bool = False) -> dict:
+    """截面視圖(僅畫面,需即時模式):切掉平面法向正側;不給 plane 則關閉。"""
+    return _call("set_section", plane=plane, offset=offset, flip=flip)
+
+
+@app.tool()
+def set_quality(name: str) -> dict:
+    """顯示精細度(僅畫面,需即時模式):低/標準/高/超高。"""
+    return _call("set_quality", name=name)
+
+
+@app.tool()
+def set_view(name: str) -> dict:
+    """切換視角(需即時模式):等角視/前視/上視/右視等。"""
+    return _call("set_view", name=name)
+
+
+@app.tool()
+def add_dimension_annotation(body: int, kind: str, index: int, mode: str = "半徑") -> dict:
+    """在圓/圓弧邊(kind=edge)或圓柱/球面(kind=face)加 3D 半徑/直徑標註(mode=半徑|直徑)。"""
+    return _call("add_dimension_annotation", body=body, kind=kind, index=index, mode=mode)
+
+
+@app.tool()
+def set_appearance(body: int, color: str | None = None, opacity: float | None = None,
+                   visible: bool | None = None) -> dict:
+    """設定實體顏色(#rrggbb)、透明度(0.05~1)、顯示或隱藏。"""
+    return _call("set_appearance", body=body, color=color, opacity=opacity, visible=visible)
+
+
+@app.tool()
+def set_material(body: int, material: str, density: float = 1.0) -> dict:
+    """指定實體材料(內建名稱見 list_materials;自訂材料給 density g/cm³),影響質量計算。"""
+    return _call("set_material", body=body, material=material, density=density)
+
+
+@app.tool()
+def list_materials() -> dict:
+    """列出內建材料與密度(g/cm³)。"""
+    return _call("list_materials")
+
+
 def main():
     app.run()

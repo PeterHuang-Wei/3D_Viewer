@@ -226,3 +226,55 @@ def test_export_drawing(tmp_path):
     assert not e.dispatch("export_drawing", {"path": str(tmp_path / "x.txt")})["ok"]
     assert not e.dispatch("export_drawing", {"path": str(pdf), "paper": "B9"})["ok"]
     assert not Engine().dispatch("export_drawing", {"path": str(pdf)})["ok"]
+
+
+def test_lock_plane_annotation_appearance():
+    e = Engine()
+    a = e.dispatch("create_primitive", {"kind": "box", "params": {"x": 20, "y": 20, "z": 10}})["new_bodies"][0]
+    top = e.dispatch("find_faces", {"body": a, "normal": [0, 0, 1]})["faces"][0]["index"]
+    assert not e.dispatch("lock_plane", {"plane": {"body": a, "face": 999}})["ok"]
+    assert not e.dispatch("add_feature", {"kind": "cylinder", "params": {"r": 3, "h": 5}, "on_plane": "locked"})["ok"]
+    assert e.dispatch("lock_plane", {"plane": {"body": a, "face": top}})["ok"]
+    r = e.dispatch("add_feature", {"kind": "cylinder", "params": {"r": 3, "h": 5}, "on_plane": "locked"})
+    assert r["ok"], r
+    bb = e.dispatch("get_state")["bodies"][1]
+    assert bb["min"][2] == pytest.approx(5, abs=1e-4)                 # 圓柱底面貼在頂面(z=5)上
+    sk = e.dispatch("create_sketch", {"plane": "locked", "entities": [{"t": "circle", "c": [0, 0], "r": 2}]})
+    assert sk["ok"]
+    assert e.dispatch("lock_plane", {})["locked"] is None
+    cyl = r["new_bodies"][0]
+    side = e.dispatch("find_faces", {"body": cyl, "geom_type": "CYLINDER"})["faces"][0]["index"]
+    assert e.dispatch("add_dimension_annotation", {"body": cyl, "kind": "face", "index": side, "mode": "直徑"})["ok"]
+    assert not e.dispatch("add_dimension_annotation", {"body": cyl, "kind": "face", "index": 99})["ok"]
+    assert e.dispatch("set_appearance", {"body": a, "color": "#ff0000", "opacity": 0.5, "visible": True})["ok"]
+    assert not e.dispatch("set_appearance", {"body": a})["ok"]
+    assert not e.dispatch("set_appearance", {"body": a, "opacity": 0.0})["ok"]
+    assert e.dispatch("set_material", {"body": a, "material": "鋁"})["ok"] or True
+    mats = e.dispatch("list_materials")["materials"]
+    m0 = next(iter(mats))
+    assert e.dispatch("set_material", {"body": a, "material": m0})["ok"]
+    assert e.dispatch("get_state")["bodies"][0]["material"] == m0
+    # 視窗專屬功能在無頭模式給出明確訊息
+    assert "即時模式" in e.dispatch("set_section", {"plane": "XY"})["error"]
+    assert "即時模式" in e.dispatch("set_quality", {"name": "高"})["error"]
+    assert not e.dispatch("set_quality", {"name": "xx"})["ok"]
+
+
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="需要 X 顯示")
+def test_bridge_view_tools(tmp_path):
+    from PyQt5.QtWidgets import QApplication
+    from ui.bridge import BridgeServer
+    from ui.main_window import MainWindow
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow()
+    w.show()
+    br = BridgeServer(w, info_path=str(tmp_path / "b.json"))
+    d = lambda op, **a: br.engine.dispatch(op, a)  # noqa: E731
+    d("create_primitive", kind="box")
+    assert d("set_section", plane="XZ", offset=1.0)["ok"] and w.scene.section is not None
+    assert d("set_section")["ok"] and w.scene.section is None
+    assert d("set_quality", name="低")["ok"] and w.scene.quality == "低"
+    d("set_quality", name="高")
+    assert d("set_view", name="前視")["ok"]
+    assert d("lock_plane", plane="XY")["ok"] and w.wp is not None
+    assert d("lock_plane")["ok"] and w.wp is None

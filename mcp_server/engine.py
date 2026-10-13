@@ -35,6 +35,8 @@ class Engine:
     def __init__(self, doc: Document | None = None, screenshotter=None):
         self.doc = doc if doc is not None else Document()
         self.screenshotter = screenshotter or self._offscreen_shot
+        self.gui = None                  # 視窗專屬功能的轉接器(即時模式由橋接提供)
+        self.locked = None               # 鎖定的工作平面 (wp, 參考面編號或 None)
 
     def dispatch(self, op: str, args: dict | None = None) -> dict:
         fn = getattr(self, "op_" + op, None)
@@ -57,8 +59,20 @@ class Engine:
         return b
 
     def _plane(self, plane, offset=0.0) -> dict:
-        """plane 可為 'XY'/'XZ'/'YZ',或參考面編號。"""
-        if isinstance(plane, int):
+        """plane 可為 'XY'/'XZ'/'YZ'、參考面編號、'locked'(lock_plane 鎖定的平面),
+        或 {"body": 實體編號, "face": 面索引}(平面的面)。"""
+        if plane == "locked":
+            if not self.locked:
+                raise EngineError("尚未鎖定平面(先呼叫 lock_plane)")
+            wp = self.locked[0]
+        elif isinstance(plane, dict):
+            try:
+                wp = F.plane_from_face(self._body(plane["body"]).shape.Faces()[plane["face"]])
+            except (KeyError, IndexError):
+                raise EngineError("面參照需為 {body, face},且面索引存在") from None
+            except ValueError as e:
+                raise EngineError(str(e)) from None
+        elif isinstance(plane, int):
             p = next((p for p in self.doc.planes if p[0] == plane), None)
             if p is None:
                 raise EngineError(f"找不到參考面 {plane}")
@@ -78,8 +92,9 @@ class Engine:
         params = dict(params)
         if on_plane is not None:
             params["wp"] = self._plane(on_plane)
-            if isinstance(on_plane, int):
-                params["plane_id"] = on_plane
+            pid = self.locked[1] if on_plane == "locked" and self.locked else on_plane
+            if isinstance(pid, int) and not isinstance(pid, bool):
+                params["plane_id"] = pid
         err = self.doc.add_feature(kind, params)
         if err:
             return {"ok": False, "error": err}
@@ -396,6 +411,86 @@ class Engine:
         vals = [r["center"][k] for r in rows]
         t = max(vals) if which == "max" else min(vals)
         return [r for r in rows if abs(r["center"][k] - t) < 1e-6]
+
+    # --- 檢視 / 視窗專屬 ---
+    def _need_gui(self):
+        if self.gui is None:
+            raise EngineError("此功能需要 3D Viewer 視窗(即時模式):請啟用「說明 → 啟用 MCP 橋接」")
+        return self.gui
+
+    def op_lock_plane(self, plane=None):
+        """鎖定工作平面(等同 F3),之後 add_feature/create_sketch 可用 on_plane/plane='locked'。
+        plane 同 on_plane 格式(XY/XZ/YZ、參考面編號、{body,face});不給則解除鎖定。"""
+        if plane is None:
+            self.locked = None
+            if self.gui:
+                self.gui.lock_plane(None, None)
+            return {"ok": True, "locked": None}
+        wp = self._plane(plane)
+        pid = plane if isinstance(plane, int) and not isinstance(plane, bool) else None
+        self.locked = (wp, pid)
+        if self.gui:
+            self.gui.lock_plane(wp, pid)
+        return {"ok": True, "locked": wp}
+
+    def op_set_section(self, plane=None, offset: float = 0.0, flip: bool = False):
+        """截面視圖(只影響畫面):切掉平面法向正側。plane 同 on_plane 格式(含 'locked');不給則關閉。"""
+        gui = self._need_gui()
+        if plane is None:
+            gui.set_section(None, None)
+            return {"ok": True, "section": None}
+        wp = self._plane(plane)
+        n = np.array(wp["normal"], float) * (-1 if flip else 1)
+        o = np.array(wp["origin"], float) + n * offset
+        gui.set_section(o, n)
+        return {"ok": True, "origin": [_r(x) for x in o], "normal": [_r(x) for x in n]}
+
+    def op_set_quality(self, name: str):
+        from viewer.quality import QUALITY
+        if name not in QUALITY:
+            raise EngineError(f"name 需為 {list(QUALITY)}")
+        self._need_gui().set_quality(name)
+        return {"ok": True, "quality": name}
+
+    def op_set_view(self, name: str):
+        self._need_gui().set_view(name)
+        return {"ok": True, "view": name}
+
+    # --- 標註 / 外觀 / 材料 ---
+    def op_add_dimension_annotation(self, body: int, kind: str, index: int, mode: str = "半徑"):
+        """在圓/圓弧邊(kind=edge)或圓柱/球面(kind=face)上加半徑或直徑標註(mode=半徑|直徑)。"""
+        if kind not in ("edge", "face") or mode not in ("半徑", "直徑"):
+            raise EngineError("kind 需為 edge/face,mode 需為 半徑/直徑")
+        sh = self._body(body).shape
+        items = sh.Edges() if kind == "edge" else sh.Faces()
+        if not 0 <= index < len(items):
+            raise EngineError(f"{kind} 索引無效(共 {len(items)} 個)")
+        c = items[index].Center()
+        return self._add("annotation", {"body": body, "kind": kind, "index": index,
+                                        "at": [c.x, c.y, c.z], "mode": mode})
+
+    def op_set_appearance(self, body: int, color: str | None = None, opacity: float | None = None,
+                          visible: bool | None = None):
+        """顏色(#rrggbb)、透明度(0.05~1)、顯示/隱藏。"""
+        self._body(body)
+        p = {"body": body}
+        if color is not None:
+            p["color"] = color
+        if opacity is not None:
+            p["opacity"] = opacity
+        if visible is not None:
+            p["visible"] = visible
+        if len(p) == 1:
+            raise EngineError("至少指定 color / opacity / visible 其中之一")
+        return self._add("appearance", p)
+
+    def op_set_material(self, body: int, material: str, density: float = 1.0):
+        """指定材料(內建名稱見 list_materials;自訂材料名稱搭配 density g/cm³)。"""
+        self._body(body)
+        return self._add("material", {"body": body, "material": material, "density": density})
+
+    def op_list_materials(self):
+        return {"ok": True, "materials": MAT.MATERIALS}
 
     # --- 特徵歷史 ---
     def _fi(self, index):

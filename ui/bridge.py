@@ -18,6 +18,7 @@ class BridgeServer(QObject):
         self.win, self.token = win, secrets.token_hex(16)
         self.info_path = info_path or BRIDGE_FILE
         self.engine = Engine(win.doc, screenshotter=self._shot)
+        self.engine.gui = _Gui(win)
         self.server = QTcpServer(self)
         self.server.newConnection.connect(self._on_conn)
         self.port = 0
@@ -84,3 +85,22 @@ class BridgeServer(QObject):
             self.win.scene.plotter.screenshot(p)
             with open(p, "rb") as f:
                 return f.read()
+
+
+class _Gui:
+    """Engine.gui 轉接器:把視窗專屬的檢視操作轉給 MainWindow。"""
+
+    def __init__(self, win):
+        self.win = win
+
+    def lock_plane(self, wp, pid):
+        self.win._set_lock(wp, pid)
+
+    def set_section(self, origin, normal):
+        self.win.scene.set_section(origin, normal)
+
+    def set_quality(self, name):
+        self.win.on_quality(name)
+
+    def set_view(self, name):
+        self.win.scene.set_view(name)

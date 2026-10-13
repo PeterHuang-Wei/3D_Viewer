@@ -185,4 +185,4 @@ python -m pytest tests
 - 進階工具:`sketch_get / sketch_edit / sketch_constrain`(草圖修整、圓角、倒角、偏移、鏡射、陣列、投影、構造線,以及拘束與尺寸)、
   `suppress_feature / rename_feature / move_feature / set_rollback`(特徵歷史)、`measure`(邊/面/角度/質量/干涉)、
   `export_drawing`(PDF/SVG/PNG/DXF 工程圖,含剖視)、`import_step`、`set_display`。
-- 目前 GUI 專屬、尚無 MCP 工具:鎖定平面(F3)、剖面視圖、顯示品質、半徑/直徑 3D 標註。
+- 檢視類工具(`set_section` 截面、`set_quality` 精細度、`set_view` 視角)需即時模式;`lock_plane` 兩種模式皆可,另有 `add_dimension_annotation`、`set_appearance`、`set_material`。
