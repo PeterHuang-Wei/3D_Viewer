@@ -167,3 +167,18 @@ python -m pytest tests
 - 配合(面貼合 / 同軸):先在要移動的零件上選一個面並執行「步驟 1」,再於固定零件選一個面並執行「步驟 2」。
   面貼合可設間距與同向;同軸對齊圓柱/圓錐軸線。已滿足的自由度不會被改動,可連續配合(如先同軸再面貼合)。
 - 配合是特徵歷史的一部分,可編輯、抑制、復原。
+
+## MCP 工具(用自然語言控制)
+同一個 repo 內的 `mcp_server/` 提供 MCP 伺服器,讓 Claude 等 LLM 以工具呼叫建立/修改模型(建基本實體、草圖、拉伸/切除、圓角、布林、組合件、量測、匯出、截圖等)。
+
+- 安裝:`pip install mcp`(已列入 requirements.txt)
+- 兩種模式(自動選擇):
+  - **即時**:在 3D Viewer 選單「說明 → 啟用 MCP 橋接」(僅本機 127.0.0.1 + 隨機 token,預設關閉),LLM 的操作會即時顯示在視窗,並可用 Ctrl+Z 復原。
+  - **無頭**:視窗未開時直接在背景處理專案,用 `open_project` / `save_project` 讀寫 .v3d。
+- Claude Code:`claude mcp add 3dviewer -- python -m mcp_server`(需在專案目錄,或用絕對路徑指定 cwd)
+- Claude Desktop(`claude_desktop_config.json`):
+  ```json
+  {"mcpServers": {"3dviewer": {"command": "python", "args": ["-m", "mcp_server"], "cwd": "C:\\path\\to\\PeterHuang"}}}
+  ```
+- 範例:「建立 40×30×20 的方塊,把四條垂直邊倒圓角 3,再在頂面中央切一個直徑 10 的通孔,匯出 STL」。
+- 邊/面以索引指定,LLM 會先呼叫 `find_faces` / `find_edges` 取得;錯誤會以中文回傳且模型自動還原,LLM 可自行修正重試。

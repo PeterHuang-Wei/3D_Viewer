@@ -160,6 +160,10 @@ class MainWindow(QMainWindow):
         c.addAction(self._action("快速拉伸(輪廓參數)...", lambda _=None: self.on_create("extrude")))
         c.addAction(self._action("快速旋轉(輪廓參數)...", lambda _=None: self.on_create("revolve")))
 
+        hm = bar.addMenu("說明(&H)")
+        self.act_bridge = self._action("啟用 MCP 橋接(讓 LLM 即時控制此視窗)", self.toggle_bridge, checkable=True)
+        hm.addAction(self.act_bridge)
+        self.bridge = None
         am = bar.addMenu("組合件(&A)")
         am.addAction(self._action("插入零件(.v3d / STEP)...", self.on_insert_part))
         am.addSeparator()
@@ -277,6 +281,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, ev):
         if self._confirm_discard():
+            self.toggle_bridge(False)
             self.autosave_timer.stop()
             S.clear_backup()
             ev.accept()
@@ -1362,6 +1367,24 @@ class MainWindow(QMainWindow):
                 return
             params["target"] = int(v["target"].split(":")[0])
         self._run(lambda: self.doc.add_feature("sketch_loft", params))
+
+    def toggle_bridge(self, on=None):
+        from ui.bridge import BridgeServer
+        on = self.act_bridge.isChecked() if on is None else on
+        if on and self.bridge is None:
+            try:
+                self.bridge = BridgeServer(self)
+                port = self.bridge.start()
+            except OSError as e:
+                self.bridge = None
+                self.act_bridge.setChecked(False)
+                QMessageBox.critical(self, "MCP 橋接", f"無法啟動:{e}")
+                return
+            self.statusBar().showMessage(f"MCP 橋接已啟用(127.0.0.1:{port})")
+        elif not on and self.bridge is not None:
+            self.bridge.stop()
+            self.bridge = None
+            self.statusBar().showMessage("MCP 橋接已停用")
 
     def on_insert_part(self):
         """插入另一個專案(.v3d)的所有實體為新實體;STEP 則走一般匯入。"""

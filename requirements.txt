@@ -3,3 +3,4 @@ pyvista
 pyvistaqt
 PyQt5
 numpy
+mcp
