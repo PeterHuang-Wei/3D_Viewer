@@ -182,3 +182,7 @@ python -m pytest tests
   ```
 - 範例:「建立 40×30×20 的方塊,把四條垂直邊倒圓角 3,再在頂面中央切一個直徑 10 的通孔,匯出 STL」。
 - 邊/面以索引指定,LLM 會先呼叫 `find_faces` / `find_edges` 取得;錯誤會以中文回傳且模型自動還原,LLM 可自行修正重試。
+- 進階工具:`sketch_get / sketch_edit / sketch_constrain`(草圖修整、圓角、倒角、偏移、鏡射、陣列、投影、構造線,以及拘束與尺寸)、
+  `suppress_feature / rename_feature / move_feature / set_rollback`(特徵歷史)、`measure`(邊/面/角度/質量/干涉)、
+  `export_drawing`(PDF/SVG/PNG/DXF 工程圖,含剖視)、`import_step`、`set_display`。
+- 目前 GUI 專屬、尚無 MCP 工具:鎖定平面(F3)、剖面視圖、顯示品質、半徑/直徑 3D 標註。

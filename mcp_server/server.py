@@ -14,6 +14,7 @@ INSTRUCTIONS = """控制 3D Viewer(CAD)。單位 mm、角度為度。流程:get_
 - 草圖:create_sketch 之後用 add_feature('sketch_extrude', {'sketch': 草圖編號, 'depth': ...}) 拉伸;op 可為 新實體/聯集/切除(切除與聯集需 target 實體編號)。
 - add_feature 通用:kind 與欄位用 feature_kinds 查詢;常用 fillet {body, edges:[索引], r}、chamfer {body, edges, d}、boolean {op:'聯集'|'差集'|'交集', target, tool, keep}、
   translate/rotate {body,x,y,z}、shell {body, faces:[索引], thickness}。
+- 草圖可用 sketch_edit(修整/圓角/倒角/偏移/鏡射/陣列/投影)與 sketch_constrain(拘束與尺寸)精修。
 - 失敗時回傳 error(中文),模型已自動還原,可修正參數後重試。"""
 
 app = _Server("3D Viewer", instructions=INSTRUCTIONS)
@@ -162,6 +163,94 @@ def screenshot(width: int = 900, height: int = 700, view: str = "等角視"):
     if not res.get("ok"):
         return res
     return Image(data=base64.b64decode(res["png_base64"]), format="png")
+
+
+@app.tool()
+def sketch_get(sketch: int) -> dict:
+    """讀取草圖的圖元(含索引與 id)、拘束與自由度。"""
+    return _call("sketch_get", sketch=sketch)
+
+
+@app.tool()
+def sketch_edit(sketch: int, action: str, indices: list[int] | None = None, params: dict | None = None) -> dict:
+    """編輯草圖。action 與 params:
+    add{entities:[同 create_sketch]} / delete(indices) / trim{index,click:[u,v]}(刪除點擊處那一段)/
+    fillet{i,j,r} / chamfer{i,j,d1,d2?}(i,j 為相接的兩條直線索引)/ offset{index,distance}(封閉輪廓,正=向外)/
+    mirror(indices){p,q,keep_original}(以 p-q 兩點連線為鏡射軸)/ linear_pattern(indices){n,dx,dy}/
+    circular_pattern(indices){n,angle,center}/ project{body,construction}(把實體的邊投影進草圖)/
+    construction(indices){on}(切換構造線,構造線不形成輪廓)。索引見 sketch_get。"""
+    return _call("sketch_edit", sketch=sketch, action=action, indices=indices, **(params or {}))
+
+
+@app.tool()
+def sketch_constrain(sketch: int, add: list[dict] | None = None, remove: list[int] | None = None,
+                     set_values: dict | None = None) -> dict:
+    """為草圖加/移除拘束或修改尺寸值並求解(衝突時不改變)。add 例:
+    {"t":"horizontal","refs":[[3]]}、{"t":"coincident","refs":[[1,"p2"],[2,"p1"]]}、
+    {"t":"length","refs":[[1]],"v":50}、{"t":"radius","refs":[[4]],"v":8}、{"t":"angle","refs":[[1],[2]],"v":90}、
+    {"t":"tangent","refs":[[1],[4]]}、{"t":"equal","refs":[[1],[2]]}。
+    類型:coincident horizontal vertical parallel perpendicular tangent equal concentric fix midpoint point_on
+    length distance hdist vdist radius diameter angle。refs 用圖元 id 與部位(p1/p2 端點、c 圓心、s/e 圓弧起訖)。
+    set_values={拘束id: 新數值} 可驅動尺寸。回傳自由度(0=完全約束)。"""
+    return _call("sketch_constrain", sketch=sketch, add=add, remove=remove, set_values=set_values)
+
+
+@app.tool()
+def suppress_feature(index: int, on: bool = True) -> dict:
+    """抑制 / 取消抑制歷史中的特徵。"""
+    return _call("suppress_feature", index=index, on=on)
+
+
+@app.tool()
+def rename_feature(index: int, name: str) -> dict:
+    """重新命名歷史中的特徵。"""
+    return _call("rename_feature", index=index, name=name)
+
+
+@app.tool()
+def move_feature(index: int, delta: int) -> dict:
+    """把特徵在歷史中上移(-1)或下移(+1)並重算。"""
+    return _call("move_feature", index=index, delta=delta)
+
+
+@app.tool()
+def set_rollback(index: int | None = None) -> dict:
+    """回溯到指定特徵之後的狀態;不給 index 則回到最新。"""
+    return _call("set_rollback", index=index)
+
+
+@app.tool()
+def import_step(path: str) -> dict:
+    """匯入 STEP 檔為新實體。"""
+    return _call("import_step", path=path)
+
+
+@app.tool()
+def measure(kind: str, body: int | None = None, index: int | None = None, body_b: int | None = None,
+            index_b: int | None = None, entity: str = "face", contact: bool = True) -> dict:
+    """量測。kind: edge(body,index:邊長/半徑/圓心)、face(body,index:面積/法向/半徑)、
+    angle(entity=face|edge, body,index,body_b,index_b)、mass(整體質量/質心/慣性矩)、
+    interference(各實體兩兩干涉,contact=是否也列出僅接觸)。"""
+    return _call("measure", kind=kind, body=body, index=index, body_b=body_b, index_b=index_b,
+                 entity=entity, contact=contact)
+
+
+@app.tool()
+def export_drawing(path: str, paper: str = "A3", views: list[str] | None = None, scale: str = "自動",
+                   third_angle: bool = True, hidden: bool = True, dims: bool = True, hole_pos: bool = True,
+                   radii: bool = True, chain: bool = False, section_axis: str | None = None,
+                   section_offset: float = 0.0, title: str = "", part: str = "", author: str = "") -> dict:
+    """輸出工程圖到 .pdf/.svg/.png/.dxf。paper: A4/A3/A2(橫式);views 預設 前視/上視/右視/等角視;
+    scale 如 自動、1:2、2:1;section_axis: XZ(前剖)/YZ(側剖)/XY(上剖) 啟用剖視(與等角視共用位置)。"""
+    return _call("export_drawing", path=path, paper=paper, views=views, scale=scale, third_angle=third_angle,
+                 hidden=hidden, dims=dims, hole_pos=hole_pos, radii=radii, chain=chain, section_axis=section_axis,
+                 section_offset=section_offset, title=title, part=part, author=author)
+
+
+@app.tool()
+def set_display(unit: str | None = None, precision: int | None = None) -> dict:
+    """設定顯示單位(mm/cm/m/in)與小數位數(只影響 App 內量測/屬性文字)。"""
+    return _call("set_display", unit=unit, precision=precision)
 
 
 def main():

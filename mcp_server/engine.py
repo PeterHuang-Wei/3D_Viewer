@@ -12,6 +12,9 @@ from core import measure as MS
 from core import materials as MAT
 from core import numfmt
 from core import sketch2d as SK
+from core import sketch_solver as K
+from core import interference as IFC
+from core import drawing as DR
 from core.model import Document
 from ui.schemas import SCHEMAS
 
@@ -182,31 +185,157 @@ class Engine:
             res["new_bodies"] = res["new_bodies"]
         return res
 
-    def op_create_sketch(self, plane, entities: list, name: str = "", offset: float = 0.0, constraints=None):
+    @staticmethod
+    def _expand(entities: list) -> list:
         ents = []
         for e in entities:
             t = e.get("t")
             if t == "rect":
                 (x1, y1), (x2, y2) = e["p1"], e["p2"]
                 pts = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
-                ents += [SK.line(pts[i], pts[(i + 1) % 4]) for i in range(4)]
+                new = [SK.line(pts[i], pts[(i + 1) % 4]) for i in range(4)]
             elif t == "polygon":
                 pts = e["pts"]
-                ents += [SK.line(pts[i], pts[(i + 1) % len(pts)]) for i in range(len(pts))]
+                new = [SK.line(pts[i], pts[(i + 1) % len(pts)]) for i in range(len(pts))]
             elif t == "line":
-                ents.append(SK.line(e["p1"], e["p2"]))
+                new = [SK.line(e["p1"], e["p2"])]
             elif t == "circle":
-                ents.append(SK.circle(e["c"], e["r"]))
+                new = [SK.circle(e["c"], e["r"])]
             elif t == "arc":
-                ents.append(SK.arc(e["c"], e["r"], e["a0"], e["a1"]))
+                new = [SK.arc(e["c"], e["r"], e["a0"], e["a1"])]
             elif t == "ellipse":
-                ents.append(SK.ellipse(e["c"], e["a"], e["b"], e.get("rot", 0.0)))
+                new = [SK.ellipse(e["c"], e["a"], e["b"], e.get("rot", 0.0))]
             elif t == "spline":
-                ents.append(SK.spline(e["pts"]))
+                new = [SK.spline(e["pts"])]
             else:
                 raise EngineError(f"未知草圖圖元:{t}(可用 line/rect/polygon/circle/arc/ellipse/spline)")
+            if e.get("construction"):
+                for n in new:
+                    n["construction"] = True
+            ents += new
+        return ents
+
+    def op_create_sketch(self, plane, entities: list, name: str = "", offset: float = 0.0, constraints=None):
+        ents = SK.assign_ids(self._expand(entities))
         return self._add("sketch", {"entities": ents, "wp": self._plane(plane, offset), "name": name,
                                     "constraints": constraints or []})
+
+    # --- 草圖編輯 / 拘束 ---
+    def _sk(self, sid):
+        for k, f in enumerate(self.doc.features):
+            if f.kind == "sketch" and sid in f.out_ids:
+                return k, f
+        raise EngineError(f"找不到草圖 {sid}")
+
+    @staticmethod
+    def _sk_view(ents, cons):
+        rows = []
+        for i, e in enumerate(ents):
+            row = {"index": i, **{k: v for k, v in e.items()}}
+            rows.append(row)
+        return {"entities": rows, "constraints": cons}
+
+    def op_sketch_get(self, sketch: int):
+        k, f = self._sk(sketch)
+        ents = SK.assign_ids(list(f.params["entities"]))
+        cons = f.params.get("constraints", [])
+        return {"ok": True, **self._sk_view(ents, cons), "dof": K.dof(ents, cons) if cons else None,
+                "constraint_types": K.NAMES}
+
+    def _sk_save(self, k, f, ents, cons, extra=None):
+        ids = {e["id"] for e in ents if "id" in e}
+        cons = [c for c in cons if all(r[0] in ids for r in c["refs"])]
+        err = self.doc.edit_feature(k, {"entities": ents, "constraints": cons})
+        if err:
+            return {"ok": False, "error": err}
+        return {"ok": True, "entity_count": len(ents), "constraint_count": len(cons), **(extra or {}), **self._summary()}
+
+    def op_sketch_edit(self, sketch: int, action: str, indices: list[int] | None = None, **kw):
+        """action: add / delete / trim / fillet / chamfer / offset / mirror / linear_pattern / circular_pattern /
+        project / construction。indices 為圖元索引(見 sketch_get)。"""
+        k, f = self._sk(sketch)
+        import copy
+        ents = SK.assign_ids(copy.deepcopy(f.params["entities"]))
+        cons = copy.deepcopy(f.params.get("constraints", []))
+        idx = list(indices or [])
+        n = len(ents)
+        for i in idx + [kw.get(x) for x in ("index", "i", "j") if kw.get(x) is not None]:
+            if not 0 <= i < n:
+                raise EngineError(f"圖元索引 {i} 超出範圍(共 {n} 個)")
+        try:
+            if action == "add":
+                ents = ents + self._expand(kw["entities"])
+            elif action == "delete":
+                ents = [e for i, e in enumerate(ents) if i not in set(idx)]
+            elif action == "trim":
+                ents = SK.trim(ents, kw["index"], kw["click"])
+            elif action == "fillet":
+                ents = SK.fillet_corner(ents, kw["i"], kw["j"], kw["r"])
+            elif action == "chamfer":
+                ents = SK.chamfer_corner(ents, kw["i"], kw["j"], kw["d1"], kw.get("d2"))
+            elif action == "offset":
+                ents = ents + SK.offset_loop(ents, kw["index"], kw["distance"])
+            elif action == "mirror":
+                ents = SK.mirror(ents, idx, kw["p"], kw["q"], kw.get("keep_original", True))
+            elif action == "linear_pattern":
+                ents = SK.linear_pattern(ents, idx, kw["n"], kw["dx"], kw["dy"])
+            elif action == "circular_pattern":
+                ents = SK.circular_pattern(ents, idx, kw["n"], kw.get("angle", 360.0), kw.get("center", [0, 0]))
+            elif action == "project":
+                ents = ents + SK.project_shape_edges(self._body(kw["body"]).shape, f.params["wp"],
+                                                     kw.get("construction", True))
+            elif action == "construction":
+                for i in idx:
+                    ents[i]["construction"] = bool(kw.get("on", True))
+            else:
+                raise EngineError(f"未知動作:{action}")
+        except KeyError as e:
+            raise EngineError(f"缺少參數:{e}") from None
+        except ValueError as e:
+            raise EngineError(str(e)) from None
+        seen, fixed = set(), []
+        for e in ents:                                           # 複製出的圖元可能帶重複編號
+            if e.get("id") in seen:
+                e = {kk: v for kk, v in e.items() if kk != "id"}
+            seen.add(e.get("id"))
+            fixed.append(e)
+        return self._sk_save(k, f, SK.assign_ids(fixed), cons)
+
+    def op_sketch_constrain(self, sketch: int, add: list[dict] | None = None, remove: list[int] | None = None,
+                            set_values: dict | None = None):
+        """add: 拘束清單 {"t":類型,"refs":[[圖元id,部位],...],"v":數值};remove: 拘束 id;set_values: {拘束id: 新數值}。
+        refs 的圖元用 id(見 sketch_get),部位 p1/p2/c/s/e;整個圖元用 [id]。回傳自由度,衝突則整體還原。"""
+        import copy
+        k, f = self._sk(sketch)
+        ents = SK.assign_ids(copy.deepcopy(f.params["entities"]))
+        cons = copy.deepcopy(f.params.get("constraints", []))
+        cons = [c for c in cons if c["id"] not in set(remove or [])]
+        for cid, v in (set_values or {}).items():
+            c = next((c for c in cons if c["id"] == int(cid)), None)
+            if c is None:
+                raise EngineError(f"找不到拘束 {cid}")
+            c["v"] = float(v)
+        nxt = max((c["id"] for c in cons), default=0) + 1
+        ids = {e["id"] for e in ents}
+        for c in add or []:
+            if c.get("t") not in K.NAMES:
+                raise EngineError(f"未知拘束類型:{c.get('t')}(可用 {', '.join(K.NAMES)})")
+            if not c.get("refs") or any(r[0] not in ids for r in c["refs"]):
+                raise EngineError(f"拘束參照的圖元 id 不存在:{c.get('refs')}")
+            c = {**c, "id": nxt}
+            nxt += 1
+            if c["t"] in K.DIMENSIONAL:
+                if "v" not in c:
+                    raise EngineError("尺寸拘束需要 v 數值")
+                if c["t"] in ("hdist", "vdist") and "sign" not in c:
+                    a, b = (K.point_coords(ents, r) for r in c["refs"])
+                    c["sign"] = -1 if b[0 if c["t"] == "hdist" else 1] - a[0 if c["t"] == "hdist" else 1] < 0 else 1
+            cons.append(c)
+        ok, out, dof, err = K.solve(ents, cons)
+        if not ok:
+            raise EngineError(f"拘束衝突或無法求解(殘差 {err:.3g}),未做任何改變")
+        res = self._sk_save(k, f, out, cons, {"dof": dof, "constraint_ids": [c["id"] for c in cons]})
+        return res
 
     def op_create_ref_plane(self, base_plane, offset: float, name: str = "", rx: float = 0.0, ry: float = 0.0):
         return self._add("refplane", {"wp": self._plane(base_plane), "offset": offset, "name": name,
@@ -268,6 +397,44 @@ class Engine:
         t = max(vals) if which == "max" else min(vals)
         return [r for r in rows if abs(r["center"][k] - t) < 1e-6]
 
+    # --- 特徵歷史 ---
+    def _fi(self, index):
+        if not 0 <= index < len(self.doc.features):
+            raise EngineError("特徵索引超出範圍")
+        return index
+
+    def op_suppress_feature(self, index: int, on: bool = True):
+        self.doc.set_suppressed(self._fi(index), on)
+        return {"ok": True, **self._summary()}
+
+    def op_rename_feature(self, index: int, name: str):
+        self.doc.rename_feature(self._fi(index), name)
+        return {"ok": True}
+
+    def op_move_feature(self, index: int, delta: int):
+        if not self.doc.move_feature(self._fi(index), delta):
+            raise EngineError("無法移動(超出範圍)")
+        return {"ok": True, **self._summary()}
+
+    def op_set_rollback(self, index: int | None = None):
+        if index is not None:
+            self._fi(index)
+        self.doc.set_rollback(index)
+        return {"ok": True, "rollback": self.doc.rollback, **self._summary()}
+
+    def op_import_step(self, path: str):
+        if not os.path.exists(path):
+            raise EngineError(f"檔案不存在:{path}")
+        err = self.doc.import_step(path)
+        return {"ok": False, "error": err} if err else {"ok": True, **self._summary()}
+
+    def op_set_display(self, unit: str | None = None, precision: int | None = None):
+        if unit:
+            numfmt.set_unit(unit)
+        if precision is not None:
+            numfmt.set_precision(precision)
+        return {"ok": True, "unit": numfmt.UNIT, "precision": numfmt.PRECISION}
+
     # --- 量測 ---
     def op_body_info(self, body: int):
         b = self._body(body)
@@ -282,6 +449,82 @@ class Engine:
     def op_distance(self, body_a: int, body_b: int):
         d, pa, pb = MS.min_distance(self._body(body_a).shape, self._body(body_b).shape)
         return {"ok": True, "distance": _r(d), "point_a": _vec(pa), "point_b": _vec(pb)}
+
+    def op_measure(self, kind: str, body: int | None = None, index: int | None = None,
+                   body_b: int | None = None, index_b: int | None = None, contact: bool = True,
+                   entity: str = "face"):
+        """kind: edge{body,index} / face{body,index} / angle{entity:face|edge, body,index,body_b,index_b}/
+        mass(整體質量屬性) / interference(實體間干涉)。"""
+        j = lambda v: _vec(v) if hasattr(v, "x") else v  # noqa: E731
+        if kind in ("edge", "face"):
+            sh = self._body(body).shape
+            items = sh.Edges() if kind == "edge" else sh.Faces()
+            if index is None or not 0 <= index < len(items):
+                raise EngineError(f"{kind} 索引無效(共 {len(items)} 個)")
+            info = (MS.edge_info if kind == "edge" else MS.face_info)(items[index])
+            return {"ok": True, **{k: (j(v) if not isinstance(v, (int, float, str, bool)) else (_r(v) if isinstance(v, float) else v))
+                                   for k, v in info.items()}}
+        if kind == "angle":
+            a_sh, b_sh = self._body(body).shape, self._body(body_b).shape
+            get = (lambda sh: sh.Faces()) if entity == "face" else (lambda sh: sh.Edges())
+            try:
+                r = MS.angle_between(get(a_sh)[index], get(b_sh)[index_b])
+            except IndexError:
+                raise EngineError("索引超出範圍") from None
+            return {"ok": True, **{k: (_r(v) if isinstance(v, float) else v) for k, v in r.items()}}
+        if kind == "mass":
+            mats, items = self.doc.materials, []
+            for b in self.doc.bodies:
+                items.append((b.name, b.shape, mats.get(b.id, {"density": 7.85})["density"]))
+            if not items:
+                raise EngineError("沒有實體")
+            r = MAT.assembly_props(items)
+            return {"ok": True, "mass_g": _r(r["mass"]), "volume": _r(r["volume"]), "com": [_r(x) for x in r["com"]],
+                    "inertia_g_mm2": [[_r(x) for x in row] for row in r["inertia"]],
+                    "parts": [{"name": p["name"], "mass_g": _r(p["mass"]), "volume": _r(p["volume"])} for p in r["parts"]],
+                    "note": "未指定材料的實體以 7.85 g/cm³(鋼)計算"}
+        if kind == "interference":
+            res = IFC.check([(b.id, b.name, b.shape) for b in self.doc.bodies], include_contact=contact)
+            return {"ok": True, "results": [{"a": r["a"][0], "b": r["b"][0], "kind": r["kind"],
+                                             "volume": _r(r["volume"]) if r["kind"] == "干涉" else 0.0,
+                                             "center": _vec(r["center"])} for r in res]}
+        raise EngineError("kind 需為 edge / face / angle / mass / interference")
+
+    def op_export_drawing(self, path: str, paper: str = "A3", views: list[str] | None = None, scale: str = "自動",
+                          third_angle: bool = True, hidden: bool = True, dims: bool = True, hole_pos: bool = True,
+                          radii: bool = True, chain: bool = False, section_axis: str | None = None,
+                          section_offset: float = 0.0, title: str = "", part: str = "", author: str = ""):
+        """輸出工程圖(.pdf/.svg/.png/.dxf)。views 預設 前視/上視/右視/等角視;section_axis 為 XZ(前剖)/YZ(側剖)/XY(上剖) 啟用剖視。"""
+        ap = self.doc.appearance
+        shapes = [b.shape for b in self.doc.bodies if ap.get(b.id, {}).get("visible", True)]
+        if not shapes:
+            raise EngineError("沒有可繪製的實體")
+        if paper not in DR.PAPERS:
+            raise EngineError(f"紙張需為 {list(DR.PAPERS)}")
+        name = os.path.splitext(os.path.basename(self.doc.path))[0] if self.doc.path else "未命名"
+        if section_axis not in (None, "XZ", "YZ", "XY"):
+            raise EngineError("section_axis 需為 XZ / YZ / XY")
+        if not path.lower().endswith((".pdf", ".svg", ".png", ".dxf")):
+            raise EngineError("副檔名需為 .pdf / .svg / .png / .dxf")
+        sheet = DR.build_sheet(shapes, tuple(views or ("前視", "上視", "右視", "等角視")), paper, third_angle, scale,
+                               hidden, dims, {"title": title or f"{name} 工程圖", "part": part or name,
+                                              "author": author, "paper": paper},
+                               section={"axis": section_axis, "offset": section_offset} if section_axis else None,
+                               hole_pos=hole_pos, radii=radii, chain=chain)
+        if path.lower().endswith(".dxf"):
+            DR.export_dxf(sheet, path)
+        else:
+            self._qt_app()
+            from ui.drawing_render import export_sheet
+            export_sheet(sheet, path)
+        return {"ok": True, "path": path, "scale": f"{sheet.scale[0]}:{sheet.scale[1]}"}
+
+    @staticmethod
+    def _qt_app():
+        from PyQt5.QtWidgets import QApplication
+        if QApplication.instance() is None:
+            os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+            Engine._app = QApplication(["3dviewer-mcp"])
 
     # --- 輸出 ---
     def op_export_step(self, path: str):

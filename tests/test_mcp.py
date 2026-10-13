@@ -130,3 +130,99 @@ def test_stdio_protocol(tmp_path):
     assert {"get_state", "add_feature", "find_faces", "screenshot", "create_sketch"} <= tools
     assert not getattr(res, "is_error", getattr(res, "isError", False)) and "headless" in str(res.content)
     assert "圓柱" in str(st.content)
+
+
+def _rect_sketch(e, **kw):
+    return e.dispatch("create_sketch", {"plane": "XY", "entities": [{"t": "rect", "p1": [0, 0], "p2": [20, 10]}], **kw})
+
+
+def test_sketch_edit_and_constraints():
+    e = Engine()
+    sid = _rect_sketch(e)["new_ids"][0]
+    g = e.dispatch("sketch_get", {"sketch": sid})
+    assert len(g["entities"]) == 4 and all("id" in x for x in g["entities"])
+    # 拘束:底邊長度 30、左邊垂直;求解後尺寸改變
+    ids = [x["id"] for x in g["entities"]]
+    r = e.dispatch("sketch_constrain", {"sketch": sid, "add": [
+        {"t": "length", "refs": [[ids[0]]], "v": 30}]})
+    assert r["ok"], r
+    ents = e.dispatch("sketch_get", {"sketch": sid})["entities"]
+    ln = ents[0]
+    assert abs(((ln["p2"][0] - ln["p1"][0]) ** 2 + (ln["p2"][1] - ln["p1"][1]) ** 2) ** .5 - 30) < 1e-6
+    # 衝突的拘束整體拒絕
+    bad = e.dispatch("sketch_constrain", {"sketch": sid, "add": [{"t": "length", "refs": [[ids[0]]], "v": 5},
+                                                                 {"t": "length", "refs": [[ids[0]]], "v": 6}]})
+    assert not bad["ok"]
+    assert not e.dispatch("sketch_constrain", {"sketch": sid, "add": [{"t": "bogus", "refs": [[1]]}]})["ok"]
+    # 圓角 / 倒角 / 偏移 / 鏡射 / 陣列 / 構造線
+    sid2 = _rect_sketch(e)["new_ids"][0]
+    g = e.dispatch("sketch_get", {"sketch": sid2})["entities"]
+    # 找出共用角點的兩條線(0,0)
+    corner = [x["index"] for x in g if [0, 0] in (x["p1"], x["p2"])]
+    assert e.dispatch("sketch_edit", {"sketch": sid2, "action": "fillet", "i": corner[0], "j": corner[1], "r": 2})["ok"]
+    types = [x["t"] for x in e.dispatch("sketch_get", {"sketch": sid2})["entities"]]
+    assert types.count("arc") == 1 and types.count("line") == 4
+    assert e.dispatch("sketch_edit", {"sketch": sid2, "action": "offset", "index": 0, "distance": 1})["ok"]
+    n = len(e.dispatch("sketch_get", {"sketch": sid2})["entities"])
+    assert e.dispatch("sketch_edit", {"sketch": sid2, "action": "mirror", "indices": [0], "p": [0, -5], "q": [10, -5]})["ok"]
+    assert e.dispatch("sketch_edit", {"sketch": sid2, "action": "linear_pattern", "indices": [0], "n": 3, "dx": 0, "dy": 30})["ok"]
+    g2 = e.dispatch("sketch_get", {"sketch": sid2})["entities"]
+    assert len(g2) == n + 1 + 2 and len({x["id"] for x in g2}) == len(g2)           # id 不重複
+    assert e.dispatch("sketch_edit", {"sketch": sid2, "action": "construction", "indices": [0], "on": True})["ok"]
+    assert not e.dispatch("sketch_edit", {"sketch": sid2, "action": "delete", "indices": [999]})["ok"]
+    assert not e.dispatch("sketch_edit", {"sketch": sid2, "action": "nope"})["ok"]
+    # 投影模型邊
+    b = e.dispatch("create_primitive", {"kind": "box", "params": {"x": 10, "y": 10, "z": 10}})["new_bodies"][0]
+    before = len(e.dispatch("sketch_get", {"sketch": sid2})["entities"])
+    assert e.dispatch("sketch_edit", {"sketch": sid2, "action": "project", "body": b})["ok"]
+    assert len(e.dispatch("sketch_get", {"sketch": sid2})["entities"]) == before + 4
+
+
+def test_history_and_measure(tmp_path):
+    e = Engine()
+    a = e.dispatch("create_primitive", {"kind": "box", "params": {"x": 10, "y": 10, "z": 10}})["new_bodies"][0]
+    b = e.dispatch("create_primitive", {"kind": "box", "params": {"x": 10, "y": 10, "z": 10}, "position": [5, 0, 0]})["new_bodies"][0]
+    assert e.dispatch("rename_feature", {"index": 0, "name": "底座"})["ok"]
+    assert e.dispatch("get_state")["features"][0]["label"] == "底座"
+    assert e.dispatch("suppress_feature", {"index": 0, "on": True})["ok"]
+    assert len(e.dispatch("get_state")["bodies"]) == 1                  # 被抑制的實體消失
+    assert e.dispatch("suppress_feature", {"index": 0, "on": False})["ok"]
+    assert e.dispatch("set_rollback", {"index": 0})["ok"] and len(e.dispatch("get_state")["bodies"]) == 1
+    assert e.dispatch("set_rollback", {})["ok"]
+    assert not e.dispatch("move_feature", {"index": 0, "delta": -1})["ok"]
+    # 量測
+    f = e.dispatch("measure", {"kind": "face", "body": a, "index": 0})
+    assert f["ok"] and f["area"] == pytest.approx(100)
+    ed = e.dispatch("measure", {"kind": "edge", "body": a, "index": 0})
+    assert ed["ok"] and ed["length"] == pytest.approx(10)
+    faces = e.dispatch("find_faces", {"body": a, "geom_type": "PLANE"})["faces"]
+    top = e.dispatch("find_faces", {"body": a, "normal": [0, 0, 1]})["faces"][0]["index"]
+    side = e.dispatch("find_faces", {"body": a, "normal": [1, 0, 0]})["faces"][0]["index"]
+    ang = e.dispatch("measure", {"kind": "angle", "entity": "face", "body": a, "index": top, "body_b": a, "index_b": side})
+    assert ang["ok"] and ang["angle"] == pytest.approx(90)
+    m = e.dispatch("measure", {"kind": "mass"})
+    assert m["ok"] and len(m["parts"]) == 2
+    it = e.dispatch("measure", {"kind": "interference"})
+    assert it["ok"] and it["results"][0]["kind"] == "干涉" and it["results"][0]["volume"] == pytest.approx(500)
+    assert not e.dispatch("measure", {"kind": "zzz"})["ok"]
+    assert e.dispatch("set_display", {"unit": "in", "precision": 2})["unit"] == "in"
+    e.dispatch("set_display", {"unit": "mm", "precision": 3})
+    # STEP 匯入
+    e.dispatch("export_step", {"path": str(tmp_path / "a.step")})
+    e2 = Engine()
+    assert e2.dispatch("import_step", {"path": str(tmp_path / "a.step")})["ok"] and e2.dispatch("get_state")["bodies"]
+    assert not e2.dispatch("import_step", {"path": "/nope.step"})["ok"]
+
+
+def test_export_drawing(tmp_path):
+    e = Engine()
+    e.dispatch("create_primitive", {"kind": "box", "params": {"x": 30, "y": 20, "z": 10}})
+    dxf = tmp_path / "d.dxf"
+    r = e.dispatch("export_drawing", {"path": str(dxf), "views": ["前視", "上視"]})
+    assert r["ok"] and dxf.stat().st_size > 100
+    pdf = tmp_path / "d.pdf"
+    r = e.dispatch("export_drawing", {"path": str(pdf), "section_axis": "XZ"})
+    assert r["ok"] and pdf.read_bytes()[:4] == b"%PDF"
+    assert not e.dispatch("export_drawing", {"path": str(tmp_path / "x.txt")})["ok"]
+    assert not e.dispatch("export_drawing", {"path": str(pdf), "paper": "B9"})["ok"]
+    assert not Engine().dispatch("export_drawing", {"path": str(pdf)})["ok"]
