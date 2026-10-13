@@ -460,3 +460,35 @@ def test_drawing_dialog_builds_sheet(monkeypatch):
     monkeypatch.setattr(QDialog, "exec_", lambda self: shown.setdefault("title", self.windowTitle()) and 0)
     w.on_drawing()
     assert "工程圖預覽" in shown["title"]
+
+
+def test_material_mass_and_interference_dialogs(monkeypatch):
+    import ui.main_window as mw
+    from PyQt5.QtWidgets import QMessageBox
+    msgs = []
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: msgs.append(a[2])))
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow()
+    w.show()
+    w.doc.add_feature("box", {"x": 10, "y": 10, "z": 10})
+    w.doc.add_feature("box", {"x": 10, "y": 10, "z": 10})
+    w.doc.add_feature("translate", {"body": 2, "x": 5, "y": 0, "z": 0})
+    w._update()
+    w.tree.setCurrentRow(0)
+    monkeypatch.setattr(mw, "ask", lambda t, f, p=None, initial=None: {"material": "鋁 6061", "density": 1.0})
+    w.on_body_material()
+    assert "[鋁 6061]" in w.tree.item(0).text()
+    monkeypatch.setattr(mw, "ask", lambda t, f, p=None, initial=None: {"default": "碳鋼", "mark": True})
+    w.on_mass_props()
+    text = msgs[-1]
+    assert "總質量:10.55 g" in text and "鋁 6061" in text and "未指定材料" in text
+    assert abs(w.scene.measure.items[-1]["points"][0][0] - 2.5 * 1.0) < 3                 # 質心在兩塊之間(偏向較重的鋼)
+    monkeypatch.setattr(mw, "ask", lambda t, f, p=None, initial=None: {"contact": True})
+    w.on_interference()
+    assert "1 組干涉" in msgs[-1] and "500" in msgs[-1]
+    assert any(it.get("mesh") is not None for it in w.scene.measure.items)
+    assert any(it["label"][1] == "CoM" for it in w.scene.measure.items)                  # 質心標記沒有被干涉檢查清掉
+    ghost = [a for a in w.scene._body_actors if hasattr(a, "_orig_op")]
+    assert ghost and all(a.GetProperty().GetOpacity() <= 0.35 + 1e-9 for a in ghost)   # 實體暫時半透明
+    w.on_measure_clear()
+    assert all(a.GetProperty().GetOpacity() == 1.0 for a in ghost)

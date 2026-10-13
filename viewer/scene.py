@@ -129,6 +129,7 @@ class Scene:
                 style="wireframe" if self.wireframe else "surface",
                 name=f"body{i}",
             )
+            actor._orig_op = ap.get("opacity", 1.0)           # 干涉檢查時暫時半透明,之後還原
             self._body_actors.append(actor)
             if self.show_edges and not self.wireframe:
                 self._body_actors.append(self.plotter.add_mesh(

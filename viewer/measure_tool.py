@@ -67,6 +67,13 @@ class MeasureTool:
         self.buf, self.items = [], []
         self.redraw()
 
+    def add_marker(self, point, label: str, text: str = "", mesh=None):
+        """在畫面加上一個永久標記(質心、干涉位置…);mesh 為要以紅色顯示的 PolyData。"""
+        pt = np.asarray(point, float)
+        self.items.append({"text": text, "lines": [], "points": [pt], "label": (pt, label), "hi": [],
+                           "mesh": mesh})
+        self.redraw()
+
     def cancel(self):
         self.buf = []
         self.redraw()
@@ -216,6 +223,13 @@ class MeasureTool:
             lbl_p.append(it["label"][0])
             lbl_t.append(it["label"][1])
             hi += it["hi"]
+        ghost = any(it.get("mesh") is not None for it in self.items)
+        for a in getattr(self.scene, "_body_actors", []):         # 有干涉標示時,實體暫時半透明才看得到內部的重疊處
+            if hasattr(a, "_orig_op"):
+                a.GetProperty().SetOpacity(min(a._orig_op, 0.35) if ghost else a._orig_op)
+        for k, it in enumerate(self.items):
+            if it.get("mesh") is not None and it["mesh"].n_cells:
+                pl.add_mesh(it["mesh"], color="#ff3b30", opacity=0.85, name=f"ms_int{k}", pickable=False)
         for b in self.buf:                       # 已選第一個(尚未完成)的暫時標示
             pts.append(b.point)
             hi.append(self._hi(b))

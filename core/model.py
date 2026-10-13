@@ -109,6 +109,16 @@ class Document:
         return out
 
     @property
+    def materials(self) -> dict:
+        """各實體指定的材料 {實體編號: {"material": 名稱, "density": g/cm³}}(後指定者覆蓋)。"""
+        out = {}
+        for k, f in enumerate(self.features):
+            if f.kind != "material" or f.suppressed or (self.rollback is not None and k > self.rollback) or f.error:
+                continue
+            out[f.params["body"]] = {"material": f.params["material"], "density": f.params["density"]}
+        return out
+
+    @property
     def annotations(self) -> list[tuple[int, str, dict]]:
         """目前的半徑/直徑標註 [(編號, 名稱, 標註資料)]。"""
         last = self.states[-1] if self.states else {}
@@ -149,6 +159,12 @@ class Document:
             op = p.get("opacity", 1.0)
             if not 0.05 <= op <= 1.0:
                 raise ValueError("透明度需介於 5% 與 100%")
+        elif k == "material":
+            if p["body"] not in bodies:
+                raise KeyError(p["body"])
+            from .materials import density_of
+            p["density"] = density_of(p["material"], p.get("density", 1.0))     # 內建材料以密度表為準;自訂需大於 0
+            feat.params["density"] = p["density"]
         elif k == "annotation":
             name, shape = bodies[p["body"]]              # 實體不存在會丟 KeyError -> 標記失敗
             geo = MS.circular_geometry(shape, p["kind"], p["index"], p["at"])

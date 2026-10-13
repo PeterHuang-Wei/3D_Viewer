@@ -18,6 +18,8 @@ from viewer.quality import QUALITY, DEFAULT as DEFAULT_QUALITY
 from viewer.scene import Scene, VIEWS
 from core import measure as MS
 from core import numfmt
+from core import materials as MAT
+from core import interference as IFC
 from core.numfmt import fmtn
 from viewer.measure_tool import TOOLS as MS_TOOLS, ANN_TOOLS
 from viewer.sketch_editor import SketchEditor, TOOLS as SK_TOOLS, CONSTRAINT_TOOLS
@@ -208,6 +210,8 @@ class MainWindow(QMainWindow):
             ms.addAction(self._action(label, lambda _, t=tool: self.on_measure(t)))
         ms.addSeparator()
         ms.addAction(self._action("所選實體的屬性(體積/表面積/質心)...", self.on_body_props))
+        ms.addAction(self._action("質量屬性(含材料:質量/質心/慣性矩)...", self.on_mass_props))
+        ms.addAction(self._action("干涉檢查(所有實體兩兩)...", self.on_interference))
         ms.addAction(self._action("量測小數位數...", self.on_precision))
         ms.addAction(self._action("清除畫面上的量測標註", self.on_measure_clear))
         ms.addAction(self._action("結束量測", self.on_measure_exit))
@@ -782,6 +786,89 @@ class MainWindow(QMainWindow):
         if aid is not None:
             self._run(lambda: self.doc.add_feature("delete", {"body": aid}))
 
+    def on_body_material(self):
+        bid = self._current_id()
+        if bid is None:
+            return
+        cur = self.doc.materials.get(bid, {"material": MAT.DEFAULT_MATERIAL, "density": 1.0})
+        v = ask("指定材料", [
+            ("material", "材料", "combo", list(MAT.MATERIALS) + [MAT.CUSTOM]),
+            ("density", "自訂密度 (g/cm³,選「自訂密度」時使用)", "num", cur["density"] if cur["material"] == MAT.CUSTOM else 1.0)],
+            self, initial={"material": cur["material"]})
+        if v:
+            self._run(lambda: self.doc.add_feature("material", {"body": bid, **v}))
+
+    def on_mass_props(self):
+        """整體質量屬性:各實體依指定材料(未指定者用選定的預設材料)計算質量、質心與慣性矩。"""
+        if not self.doc.bodies:
+            QMessageBox.information(self, "質量屬性", "目前沒有實體")
+            return
+        v = ask("質量屬性", [("default", "未指定材料的實體以此計算", "combo", list(MAT.MATERIALS), ),
+                             ("mark", "在畫面標出質心", "bool", True)], self, initial={"default": MAT.DEFAULT_MATERIAL})
+        if not v:
+            return
+        mats = self.doc.materials
+        items, notes = [], []
+        for b in self.doc.bodies:
+            if b.id in mats:
+                name, dens = mats[b.id]["material"], mats[b.id]["density"]
+            else:
+                name, dens = v["default"], MAT.MATERIALS[v["default"]]
+                notes.append(b.name)
+            items.append((f"{b.name} [{name}]", b.shape, dens))
+        r = MAT.assembly_props(items)
+        f = fmtn
+        I = r["inertia"]
+        pm = MAT.principal_moments(I)
+        lines = [f"整體質量屬性(共 {len(items)} 個實體)",
+                 f"總質量:{f(r['mass'])} g({f(r['mass'] / 1000)} kg)",
+                 f"總體積:{f(r['volume'])} mm³({f(r['volume'] / 1000)} cm³)",
+                 f"質心:({f(r['com'][0])}, {f(r['com'][1])}, {f(r['com'][2])}) mm",
+                 f"慣性矩(對質心,軸向平行座標軸,g·mm²):",
+                 f"  Ixx={f(I[0][0])}  Iyy={f(I[1][1])}  Izz={f(I[2][2])}",
+                 f"  Ixy={f(I[0][1])}  Ixz={f(I[0][2])}  Iyz={f(I[1][2])}",
+                 f"主慣性矩:{f(pm[0])}, {f(pm[1])}, {f(pm[2])}", "", "各實體:"]
+        for p in r["parts"]:
+            lines.append(f"  {p['name']}:密度 {f(p['density'])} g/cm³,體積 {f(p['volume'])} mm³,質量 {f(p['mass'])} g")
+        if notes:
+            lines.append(f"\n※ 未指定材料的實體({'、'.join(notes)})以「{v['default']}」計算。")
+        text = "\n".join(lines)
+        self.measure_text.appendPlainText(text + "\n")
+        self.measure_dock.show()
+        if v["mark"]:
+            self.scene.measure.add_marker(r["com"], "CoM")
+        QMessageBox.information(self, "質量屬性", text)
+
+    def on_interference(self):
+        if len(self.doc.bodies) < 2:
+            QMessageBox.information(self, "干涉檢查", "至少需要兩個實體")
+            return
+        v = ask("干涉檢查", [("contact", "同時列出僅接觸(貼合)的實體", "bool", True)], self)
+        if not v:
+            return
+        res = IFC.check([(b.id, b.name, b.shape) for b in self.doc.bodies], include_contact=v["contact"])
+        ms = self.scene.measure
+        ms.items = [it for it in ms.items if it["label"][1] != "INT"]        # 只清掉上一次的干涉標示,保留其他量測
+        ms.redraw()
+        self.measure_dock.show()
+        if not res:
+            text = "干涉檢查:沒有發現干涉" + ("或接觸。" if v["contact"] else "。")
+        else:
+            from viewer.mesh import shape_to_mesh
+            n_int = sum(1 for r in res if r["kind"] == "干涉")
+            lines = [f"干涉檢查:{n_int} 組干涉" + (f"、{len(res) - n_int} 組接觸" if len(res) > n_int else "")]
+            for r in res:
+                c = r["center"]
+                lines.append(f"  {r['a'][1]} ∩ {r['b'][1]}:{r['kind']}"
+                             + (f",重疊體積 {fmtn(r['volume'])} mm³" if r["kind"] == "干涉" else "")
+                             + f",位置 ({fmtn(c.x)}, {fmtn(c.y)}, {fmtn(c.z)})")
+                if r["shape"] is not None:
+                    self.scene.measure.add_marker((c.x, c.y, c.z), "INT", mesh=shape_to_mesh(r["shape"], 0.02, 0.1))
+            text = "\n".join(lines)
+        self.measure_text.appendPlainText(text + "\n")
+        self.statusBar().showMessage(text.splitlines()[0])
+        QMessageBox.information(self, "干涉檢查", text)
+
     def on_precision(self):
         n, ok = QInputDialog.getInt(self, "量測小數位數", "最多顯示的小數位數(預設 3,即 .3f;整數仍顯示為整數):", numfmt.PRECISION, 0, 8)
         if ok:
@@ -1290,7 +1377,8 @@ class MainWindow(QMainWindow):
         bid = self.doc.bodies[self.tree.currentRow()].id
         hidden = not self.doc.appearance.get(bid, {}).get("visible", True)
         m = QMenu(self)
-        for text, slot in (("顏色...", self.on_body_color), ("透明度...", self.on_body_opacity),
+        for text, slot in (("材料...", self.on_body_material),
+                           ("顏色...", self.on_body_color), ("透明度...", self.on_body_opacity),
                            ("顯示" if hidden else "隱藏", self.on_body_toggle),
                            ("重設外觀", self.on_body_reset),
                            ("所選實體的屬性...", self.on_body_props), ("刪除實體", self.on_delete_body)):
@@ -1375,7 +1463,9 @@ class MainWindow(QMainWindow):
         self.scene.refresh(self.doc, reset_camera and bool(self.doc.bodies))
         self.tree.clear()
         ap = self.doc.appearance
-        self.tree.addItems([f"{b.id}: {b.name}" + ("(隱藏)" if not ap.get(b.id, {}).get("visible", True) else "")
+        mats = self.doc.materials
+        self.tree.addItems([f"{b.id}: {b.name}" + (f" [{mats[b.id]['material']}]" if b.id in mats else "")
+                            + ("(隱藏)" if not ap.get(b.id, {}).get("visible", True) else "")
                             for b in self.doc.bodies])
         self.ann_list.clear()
         self.ann_list.addItems([f"{i}: {n}" for i, n, _ in self.doc.annotations])
