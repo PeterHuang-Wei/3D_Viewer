@@ -233,6 +233,14 @@ class Document:
                 bodies[feat.out_ids[0]] = (f"{name}(鏡射)", m)
             else:
                 bodies[p["body"]] = (name, shape.fuse(m).clean())
+        elif k == "mate":
+            from .assembly import mate_shape
+            if p["fixed"] == p["moving"]:
+                raise ValueError("配合的兩個實體不可相同")
+            _, fx = bodies[p["fixed"]]
+            name, mv = bodies[p["moving"]]
+            bodies[p["moving"]] = (name, mate_shape(fx, p["face_a"], mv, p["face_b"], p["type"],
+                                                    p.get("offset", 0.0), p.get("flip", False)))
         elif k == "rib":
             name, shape = bodies[p["body"]]
             sk = bodies.get(p["sketch"], (None, None))[1]
@@ -435,6 +443,10 @@ class Document:
     def load_project(self, path: str) -> None:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
+        self.load_data(data)
+        self.path = path
+
+    def load_data(self, data: dict) -> None:
         if data.get("version", 0) > FORMAT_VERSION:
             raise ValueError("專案檔版本過新,請更新程式")
         self.clear()
@@ -444,4 +456,3 @@ class Document:
         ids = [i for f in self.features for i in f.out_ids]
         self._next_id = max(ids, default=0) + 1
         self.recompute(0)
-        self.path = path

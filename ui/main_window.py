@@ -160,6 +160,11 @@ class MainWindow(QMainWindow):
         c.addAction(self._action("快速拉伸(輪廓參數)...", lambda _=None: self.on_create("extrude")))
         c.addAction(self._action("快速旋轉(輪廓參數)...", lambda _=None: self.on_create("revolve")))
 
+        am = bar.addMenu("組合件(&A)")
+        am.addAction(self._action("插入零件(.v3d / STEP)...", self.on_insert_part))
+        am.addSeparator()
+        am.addAction(self._action("配合步驟 1:記錄要移動零件的所選面", self.on_mate_pick_moving))
+        am.addAction(self._action("配合步驟 2:對固定零件的所選面進行配合...", self.on_mate_apply))
         sk = bar.addMenu("草圖(&S)")
         sk.addAction(self._action("在鎖定平面上新建草圖", self.on_new_sketch, "F4"))
         sk.addAction(self._action("編輯所選草圖...", self.on_edit_sketch))
@@ -1357,6 +1362,55 @@ class MainWindow(QMainWindow):
                 return
             params["target"] = int(v["target"].split(":")[0])
         self._run(lambda: self.doc.add_feature("sketch_loft", params))
+
+    def on_insert_part(self):
+        """插入另一個專案(.v3d)的所有實體為新實體;STEP 則走一般匯入。"""
+        path, _ = QFileDialog.getOpenFileName(self, "插入零件", "", "零件 (*.v3d *.step *.stp);;所有檔案 (*)")
+        if not path:
+            return
+        if path.lower().endswith((".step", ".stp")):
+            self._run(lambda: self.doc.import_step(path))
+            return
+        title, fields = SCHEMAS["insert"]
+        v = ask(title, fields, self)
+        if not v:
+            return
+        try:
+            import json
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "插入失敗", str(e))
+            return
+        self._run(lambda: self.doc.add_feature("insert", {**v, "project": data, "source": os.path.basename(path)}))
+
+    def _selected_face(self, what):
+        s = self.scene
+        if s.sel_body is None or len(s.sel_faces) != 1:
+            QMessageBox.information(self, "配合", f"請先用「選取模式:面」在{what}上選取恰好一個面")
+            return None
+        return self.doc.bodies[s.sel_body].id, next(iter(s.sel_faces))
+
+    def on_mate_pick_moving(self):
+        r = self._selected_face("要移動的零件")
+        if r:
+            self._mate_moving = r
+            self.statusBar().showMessage("已記錄移動面;請改選固定零件的面,再執行「配合步驟 2」")
+
+    def on_mate_apply(self):
+        mv = getattr(self, "_mate_moving", None)
+        if mv is None:
+            QMessageBox.information(self, "配合", "請先執行「配合步驟 1」記錄要移動零件的面")
+            return
+        r = self._selected_face("固定零件")
+        if not r:
+            return
+        title, fields = SCHEMAS["mate"]
+        v = ask(title, fields, self)
+        if v:
+            self._run(lambda: self.doc.add_feature("mate", {**v, "fixed": r[0], "face_a": r[1],
+                                                            "moving": mv[0], "face_b": mv[1]}))
+            self._mate_moving = None
 
     def on_draft(self):
         s = self.scene

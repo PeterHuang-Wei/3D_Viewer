@@ -11,7 +11,7 @@ LABELS = {
     "box": "方塊", "cylinder": "圓柱", "sphere": "球", "cone": "圓錐", "torus": "環",
     "extrude": "快速拉伸", "revolve": "快速旋轉", "rod": "外螺紋螺桿",
     "thread_tool": "內螺紋工具體", "step": "匯入 STEP",
-    "translate": "平移", "sketch": "草圖", "sketch_extrude": "草圖拉伸", "sketch_revolve": "草圖旋轉", "sketch_sweep": "草圖掃掠", "sketch_loft": "草圖放樣", "helix": "螺旋線路徑", "annotation": "半徑/直徑標註", "pattern": "3D 陣列", "appearance": "外觀", "material": "材料", "draft": "拔模", "rib": "加肋", "mirror": "鏡射實體", "hole": "孔", "shell": "抽殼", "refplane": "參考面", "scale": "縮放", "rotate": "旋轉", "fillet": "圓角", "chamfer": "倒角",
+    "translate": "平移", "sketch": "草圖", "sketch_extrude": "草圖拉伸", "sketch_revolve": "草圖旋轉", "sketch_sweep": "草圖掃掠", "sketch_loft": "草圖放樣", "helix": "螺旋線路徑", "annotation": "半徑/直徑標註", "pattern": "3D 陣列", "appearance": "外觀", "material": "材料", "draft": "拔模", "insert": "插入零件", "mate": "配合", "rib": "加肋", "mirror": "鏡射實體", "hole": "孔", "shell": "抽殼", "refplane": "參考面", "scale": "縮放", "rotate": "旋轉", "fillet": "圓角", "chamfer": "倒角",
     "thread_hole": "螺紋孔", "boolean": "布林運算", "delete": "刪除",
 }
 
@@ -48,6 +48,11 @@ def _revolve(p):
 
 
 # kind -> fn(params) -> [Shape]  (建立新實體)
+def _insert(p):
+    from .assembly import project_shapes
+    return [s for _, s in project_shapes(p["project"], p.get("x", 0), p.get("y", 0), p.get("z", 0))]
+
+
 CREATORS = {
     "box": lambda p: [F.make_box(p["x"], p["y"], p["z"])],
     "cylinder": lambda p: [F.make_cylinder(p["r"], p["h"])],
@@ -59,6 +64,7 @@ CREATORS = {
     "rod": _rod,
     "thread_tool": _rod,
     "step": lambda p: step_text_to_shapes(p["data"]),
+    "insert": _insert,
 }
 
 # 鎖定平面時可放置的建立類特徵 -> 是否讓底面貼齊平面
