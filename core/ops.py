@@ -11,7 +11,7 @@ LABELS = {
     "box": "方塊", "cylinder": "圓柱", "sphere": "球", "cone": "圓錐", "torus": "環",
     "extrude": "快速拉伸", "revolve": "快速旋轉", "rod": "外螺紋螺桿",
     "thread_tool": "內螺紋工具體", "step": "匯入 STEP",
-    "translate": "平移", "sketch": "草圖", "sketch_extrude": "草圖拉伸", "sketch_revolve": "草圖旋轉", "sketch_sweep": "草圖掃掠", "sketch_loft": "草圖放樣", "helix": "螺旋線路徑", "annotation": "半徑/直徑標註", "pattern": "3D 陣列", "appearance": "外觀", "material": "材料", "mirror": "鏡射實體", "hole": "孔", "shell": "抽殼", "refplane": "參考面", "scale": "縮放", "rotate": "旋轉", "fillet": "圓角", "chamfer": "倒角",
+    "translate": "平移", "sketch": "草圖", "sketch_extrude": "草圖拉伸", "sketch_revolve": "草圖旋轉", "sketch_sweep": "草圖掃掠", "sketch_loft": "草圖放樣", "helix": "螺旋線路徑", "annotation": "半徑/直徑標註", "pattern": "3D 陣列", "appearance": "外觀", "material": "材料", "draft": "拔模", "rib": "加肋", "mirror": "鏡射實體", "hole": "孔", "shell": "抽殼", "refplane": "參考面", "scale": "縮放", "rotate": "旋轉", "fillet": "圓角", "chamfer": "倒角",
     "thread_hole": "螺紋孔", "boolean": "布林運算", "delete": "刪除",
 }
 
@@ -87,6 +87,18 @@ def _pattern(p, s):
     return F.pattern_circular(s, p["n"], p["angle"], (p["cx"], p["cy"], p["cz"]), d)
 
 
+def _draft(p, s):
+    if p.get("plane") == "鎖定平面":
+        if not p.get("wp"):
+            raise ValueError("中性面選了鎖定平面,但沒有工作平面")
+        neutral = p["wp"]
+    else:
+        base = F.WORLD_PLANES[p["plane"]]
+        n = base["normal"]
+        neutral = {"origin": [c * p.get("offset", 0.0) for c in n], "normal": n}
+    return F.draft_faces(s, set(p["faces"]), p["angle"], neutral, p.get("flip", False))
+
+
 def _holes(p, s):
     if not p.get("wp"):
         raise ValueError("孔需要在鎖定的工作平面上建立")
@@ -106,6 +118,7 @@ MODIFIERS = {
     "chamfer": lambda p, s: F.chamfer(s, set(p["edges"]), p["d"], p.get("d2") or None),
     "thread_hole": _hole,
     "pattern": _pattern,
+    "draft": _draft,
     "hole": _holes,
     "shell": lambda p, s: F.shell_shape(s, set(p["faces"]), p["thickness"], p["dir"] == "向內"),
 }

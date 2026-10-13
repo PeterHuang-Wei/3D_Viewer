@@ -63,6 +63,12 @@ SCHEMAS = {
     "shell": ("抽殼(所選面為開口)", [("thickness", "壁厚", "num", 2), ("dir", "方向", "combo", ["向內", "向外"])]),
     "sketch_loft": ("草圖放樣", [("ruled", "直紋(各段以直線連接,預設為平滑)", "bool", False),
                                  ("op", "操作", "combo", ["新實體", "聯集", "切除"])]),
+    "draft": ("拔模(所選面)", [
+        ("angle", "拔模角度(度)", "num", 3),
+        ("plane", "中性面(其法向為脫模方向)", "combo", ["XY", "XZ", "YZ", "鎖定平面"]),
+        ("offset", "中性面沿法向的位置", "num", 0), ("flip", "反向(面往外擴)", "bool", False)]),
+    "rib": ("加肋", [("thickness", "肋厚", "num", 3), ("symmetric", "對稱於草圖平面", "bool", True),
+                     ("flip", "改朝另一側延伸", "bool", False)]),
     "annotation": ("半徑/直徑標註", [("mode", "標註類型", "combo", ["半徑", "直徑"])]),
     "sketch_sweep": ("草圖掃掠", [("align", "自動對齊:輪廓移到路徑起點並垂直於路徑", "bool", False),
                                   ("frenet", "輪廓隨路徑轉向(Frenet)", "bool", True),

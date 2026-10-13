@@ -492,3 +492,37 @@ def test_material_mass_and_interference_dialogs(monkeypatch):
     assert ghost and all(a.GetProperty().GetOpacity() <= 0.35 + 1e-9 for a in ghost)   # 實體暫時半透明
     w.on_measure_clear()
     assert all(a.GetProperty().GetOpacity() == 1.0 for a in ghost)
+
+
+def test_draft_and_rib_dialogs(monkeypatch):
+    import ui.main_window as mw
+    from PyQt5.QtWidgets import QMessageBox
+    from core import sketch2d as S
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *a, **k: (_ for _ in ()).throw(AssertionError(a[2]))))
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow()
+    w.show()
+    w.doc.add_feature("box", {"x": 20, "y": 20, "z": 20})
+    w._update()
+    side = [i for i, f in enumerate(w.doc.bodies[0].shape.Faces()) if abs(f.normalAt().z) < 0.1]
+    w.scene.sel_body, w.scene.sel_faces = 0, set(side)
+    monkeypatch.setattr(mw, "ask", lambda t, f, p=None, initial=None: {"angle": 5.0, "plane": "XY", "offset": -10.0, "flip": False})
+    w.on_draft()
+    assert w.doc.features[-1].kind == "draft" and w.doc.features[-1].error is None
+    assert w.doc.bodies[0].shape.Volume() < 8000
+    # 加肋:L 形托架(底板 + 立板),在轉角補三角肋
+    w.doc.clear()
+    for kind, params in (("box", {"x": 40, "y": 20, "z": 4}), ("translate", {"body": 1, "x": 0, "y": 0, "z": 2}),
+                         ("box", {"x": 4, "y": 20, "z": 30}), ("translate", {"body": 2, "x": 18, "y": 0, "z": 15}),
+                         ("boolean", {"op": "聯集", "target": 1, "tool": 2, "keep": False})):
+        w.doc.add_feature(kind, params)
+    xz = {"origin": [0, 0, 0], "xdir": [1, 0, 0], "normal": [0, -1, 0]}
+    w.doc.add_feature("sketch", {"entities": [S.line((4, 4), (16, 16))], "wp": xz})
+    w._update()
+    w.tree.setCurrentRow(0)
+    base = w.doc.bodies[0].shape.Volume()
+    monkeypatch.setattr(mw, "ask", lambda t, f, p=None, initial=None: {
+        "sketch": f"{w.doc.sketches[-1][0]}: x", "thickness": 3.0, "symmetric": True, "flip": False})
+    w.on_rib()
+    assert w.doc.features[-1].kind == "rib" and abs(w.doc.bodies[0].shape.Volume() - base - 216) < 1e-3

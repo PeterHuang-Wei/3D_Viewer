@@ -232,6 +232,15 @@ class Document:
                 bodies[feat.out_ids[0]] = (f"{name}(鏡射)", m)
             else:
                 bodies[p["body"]] = (name, shape.fuse(m).clean())
+        elif k == "rib":
+            name, shape = bodies[p["body"]]
+            sk = bodies.get(p["sketch"], (None, None))[1]
+            if not isinstance(sk, dict) or "entities" not in sk:
+                raise ValueError("找不到草圖")
+            from . import sketch2d as SK
+            wire = SK.path_wire(sk["entities"], sk["wp"])
+            bodies[p["body"]] = (name, F.rib_solid(shape, wire, sk["wp"]["normal"], p["thickness"],
+                                                    p.get("symmetric", True), p.get("flip", False)))
         elif k in MODIFIERS:
             name, shape = bodies[p["body"]]
             bodies[p["body"]] = (name, MODIFIERS[k](p, shape))

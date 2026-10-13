@@ -290,3 +290,84 @@ def shell_shape(shape: cq.Shape, face_ids, thickness: float, inward: bool = True
     if not res.isValid() or res.Volume() < 1e-9:
         raise ValueError("抽殼結果無效:請減小壁厚")
     return res
+
+
+# --- 拔模斜度 / 加肋 ---
+def draft_faces(shape: cq.Shape, face_ids, angle: float, neutral: dict, flip: bool = False) -> cq.Shape:
+    """拔模:face_ids 為要傾斜的面;neutral 為中性面(origin/normal),其法向即拔模(脫模)方向。
+    angle > 0 時,面沿拔模方向遠離中性面時向內收(實體變細);flip 反向。"""
+    import math as _m
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_DraftAngle
+    from OCP.gp import gp_Dir, gp_Pln, gp_Pnt
+    if not face_ids:
+        raise ValueError("請先選取要拔模的面")
+    if not 0 < abs(angle) < 89:
+        raise ValueError("拔模角度需介於 0° 與 89° 之間")
+    faces = shape.Faces()
+    n = cq.Vector(*neutral["normal"]).normalized()
+    pull = gp_Dir(n.x, n.y, n.z)
+    plane = gp_Pln(gp_Pnt(*neutral["origin"]), pull)
+    d = BRepOffsetAPI_DraftAngle(shape.wrapped)
+    try:
+        for i in sorted(face_ids):
+            d.Add(faces[i].wrapped, pull, _m.radians(-angle if flip else angle), plane)
+        d.Build()
+    except Exception as e:  # noqa: BLE001
+        raise ValueError("拔模失敗:所選面無法依此方向與角度傾斜(例如面與拔模方向垂直)") from e
+    if not d.IsDone():
+        raise ValueError("拔模失敗:請調整角度、中性面或所選面")
+    res = cq.Shape.cast(d.Shape())
+    if not res.isValid() or res.Volume() < 1e-9:
+        raise ValueError("拔模結果無效")
+    return res
+
+
+def rib_solid(body: cq.Shape, wire: cq.Wire, normal, thickness: float, symmetric: bool = True,
+              flip: bool = False) -> cq.Shape:
+    """加肋:草圖開放輪廓(在平面內)為肋的外緣,朝實體方向延伸直到碰到實體,厚度沿草圖平面法向。
+    延伸方向自動選取「較快碰到實體」的一側(體積較小者);flip 改選另一側。"""
+    import numpy as np
+    from .measure import min_distance
+    if thickness <= 0:
+        raise ValueError("肋厚必須大於 0")
+    n = np.array(cq.Vector(*normal).normalized().toTuple())
+    pts = []
+    for e in wire.Edges():
+        ps = [np.array(v.toTuple()) for v in e.positions(np.linspace(0, 1, 2 if e.geomType() == "LINE" else 24))]
+        pts += ps if not pts else ps[1:]
+    if len(pts) < 2:
+        raise ValueError("肋的輪廓至少要有一段線")
+    chord = pts[-1] - pts[0]
+    if np.linalg.norm(chord) < 1e-9:
+        raise ValueError("肋的輪廓起點與終點不可重合")
+    d0 = np.cross(n, chord)
+    d0 = d0 / np.linalg.norm(d0)
+    bb = body.BoundingBox()
+    diag = float(np.linalg.norm([bb.xlen, bb.ylen, bb.zlen]))
+    L = diag * 1.5 + 1
+    box = cq.Solid.makeBox(bb.xlen, bb.ylen, bb.zlen, pnt=cq.Vector(bb.xmin, bb.ymin, bb.zmin))
+    air = box.cut(body)
+
+    def candidate(d):
+        poly = [cq.Vector(*p) for p in pts] + [cq.Vector(*(pts[-1] + d * L)), cq.Vector(*(pts[0] + d * L))]
+        face = cq.Face.makeFromWires(cq.Wire.makePolygon(poly + [poly[0]]))
+        if symmetric:
+            face = face.moved(cq.Location(cq.Vector(*(-n * thickness / 2))))
+        slab = cq.Solid.extrudeLinear(face, cq.Vector(*(n * thickness)))
+        common = slab.intersect(air)
+        keep = [s for s in common.Solids() if min_distance(s, wire)[0] < 1e-4]
+        return keep
+
+    cands = [candidate(d0), candidate(-d0)]
+    vols = [sum(s.Volume() for s in c) if c else float("inf") for c in cands]
+    order = sorted(range(2), key=lambda i: vols[i])
+    pick = order[1 if flip else 0]
+    if not cands[pick]:
+        pick = order[0]
+    if not cands[pick]:
+        raise ValueError("肋沒有碰到實體:請把輪廓畫在實體附近,朝實體方向")
+    rib = _fuse_all(cands[pick])
+    res = body.fuse(rib).clean()
+    if not res.isValid():
+        raise ValueError("加肋結果無效")
+    return res

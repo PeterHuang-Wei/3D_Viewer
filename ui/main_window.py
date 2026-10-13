@@ -158,6 +158,7 @@ class MainWindow(QMainWindow):
         sk.addAction(self._action("草圖旋轉(實體/切除)...", lambda _=None: self.on_sketch_solid("sketch_revolve")))
         sk.addAction(self._action("草圖掃掠(實體/切除)...", self.on_sketch_sweep))
         sk.addAction(self._action("草圖放樣(實體/切除)...", self.on_sketch_loft))
+        sk.addAction(self._action("加肋(以開放輪廓草圖,於所選實體)...", self.on_rib))
         sk.addSeparator()
         sk.addAction(self._action("在鎖定平面建立螺旋線路徑...", self.on_create_helix))
         sk.addAction(self._action("編輯所選螺旋線...", self.on_edit_helix))
@@ -186,6 +187,7 @@ class MainWindow(QMainWindow):
         m2.addAction(self._action("圓角...", lambda: self.on_edge_feature("fillet")))
         m2.addAction(self._action("倒角...", lambda: self.on_edge_feature("chamfer")))
         m2.addAction(self._action("抽殼(所選面為開口,未選則封閉空心)...", self.on_shell))
+        m2.addAction(self._action("拔模(所選面)...", self.on_draft))
 
         th = bar.addMenu("螺牙(&H)")
         th.addAction(self._action("外螺紋螺桿...", lambda: self.on_create("rod")))
@@ -1243,6 +1245,40 @@ class MainWindow(QMainWindow):
                 return
             params["target"] = int(v["target"].split(":")[0])
         self._run(lambda: self.doc.add_feature("sketch_loft", params))
+
+    def on_draft(self):
+        s = self.scene
+        if s.sel_body is None or not s.sel_faces:
+            QMessageBox.information(self, "拔模", "請先用「選取模式:面」選取要拔模的面(可多選)")
+            return
+        body = self.doc.bodies[s.sel_body]
+        title, fields = SCHEMAS["draft"]
+        v = ask(title, fields, self, initial={"plane": "鎖定平面" if self.wp else "XY"})
+        if not v:
+            return
+        params = {**v, "body": body.id, "faces": sorted(s.sel_faces)}
+        if v["plane"] == "鎖定平面":
+            if not self.wp:
+                QMessageBox.information(self, "拔模", "請先鎖定平面(F3),或改選 XY/XZ/YZ")
+                return
+            params = self._with_lock(params)
+        self._run(lambda: self.doc.add_feature("draft", params))
+
+    def on_rib(self):
+        bid = self._current_id()
+        if bid is None:
+            return
+        sketches = self.doc.sketches
+        if not sketches:
+            QMessageBox.information(self, "加肋", "請先建立一個開放輪廓的草圖(相連的線/圓弧,畫在肋所在的平面上,輪廓為肋的外緣)")
+            return
+        items = [f"{i}: {n}" for i, n, _ in sketches]
+        title, fields = SCHEMAS["rib"]
+        v = ask(title + "(輪廓朝實體方向延伸至碰到實體)", [("sketch", "肋的輪廓草圖", "combo", items)] + list(fields), self,
+                initial={"sketch": items[-1]})
+        if v:
+            params = {k: val for k, val in v.items() if k != "sketch"}
+            self._run(lambda: self.doc.add_feature("rib", {**params, "body": bid, "sketch": int(v["sketch"].split(":")[0])}))
 
     def on_variables(self):
         """編輯變數與公式:每行「名稱 = 數字或算式」,後面的可引用前面的;特徵參數以 =名稱 引用。"""
