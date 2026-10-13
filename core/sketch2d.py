@@ -27,6 +27,36 @@ def arc(c, r, a0, a1):
             "a0": float(a0) % 360.0, "a1": float(a1) % 360.0}
 
 
+def ellipse(c, a, b, rot=0.0):
+    """橢圓:中心 c、半長軸 a(沿 rot 度方向)、半短軸 b。"""
+    if a <= 0 or b <= 0:
+        raise ValueError("橢圓的半長軸與半短軸必須大於 0")
+    if b > a:                                  # 保持 a >= b(OCC 需求),交換並轉 90°
+        a, b, rot = b, a, rot + 90.0
+    return {"t": "ellipse", "c": [float(c[0]), float(c[1])], "a": float(a), "b": float(b), "rot": float(rot) % 180.0}
+
+
+def _distinct(pts, tol=1e-9):
+    out = []
+    for p in pts:
+        if not out or math.hypot(p[0] - out[-1][0], p[1] - out[-1][1]) > tol:
+            out.append([float(p[0]), float(p[1])])
+    return out
+
+
+def spline(pts):
+    """通過各點的平滑樣條(至少 3 個不重複的點)。"""
+    pts = _distinct(pts)
+    if len(pts) < 3:
+        raise ValueError("樣條至少需要 3 個不重複的點")
+    return {"t": "spline", "pts": pts}
+
+
+def profile_entities(entities):
+    """排除構造線(construction=True)後的圖元:只有這些會形成輪廓/路徑。"""
+    return [e for e in entities if not e.get("construction")]
+
+
 def assign_ids(entities):
     """替沒有編號的圖元指派唯一編號(拘束以編號參照圖元)。就地修改並回傳。"""
     used = {e["id"] for e in entities if "id" in e}
@@ -80,6 +110,8 @@ def _pt(e, ang):
 
 
 def endpoints(e):
+    if e["t"] == "spline":
+        return [list(e["pts"][0]), list(e["pts"][-1])]
     if e["t"] == "line":
         return [list(e["p1"]), list(e["p2"])]
     if e["t"] == "arc":
@@ -90,6 +122,13 @@ def endpoints(e):
 def snap_points(e):
     """可吸附的特徵點:端點、圓心、直線中點、圓的四分點。"""
     pts = endpoints(e)
+    if e["t"] == "spline":
+        return [list(p) for p in e["pts"]]
+    if e["t"] == "ellipse":
+        c, a, b, t = e["c"], e["a"], e["b"], math.radians(e["rot"])
+        ca, sa = math.cos(t), math.sin(t)
+        return [list(c)] + [[c[0] + x * ca - y * sa, c[1] + x * sa + y * ca] for x, y in
+                            ((a, 0), (-a, 0), (0, b), (0, -b))]
     if e["t"] == "line":
         pts.append([(e["p1"][0] + e["p2"][0]) / 2, (e["p1"][1] + e["p2"][1]) / 2])
     else:
@@ -100,7 +139,7 @@ def snap_points(e):
 
 
 def is_closed_by_itself(e) -> bool:
-    return e["t"] == "circle" or (e["t"] == "arc" and abs(span(e) - 360.0) < 1e-7)
+    return e["t"] in ("circle", "ellipse") or (e["t"] == "arc" and abs(span(e) - 360.0) < 1e-7)
 
 
 DISPLAY_SEGMENTS = 128      # 顯示用:整圓的線段數(由主程式依顯示精細度設定)
@@ -110,13 +149,35 @@ def sample(e, n: int = 48):
     """離散成折線點(依圖元自然方向)。"""
     if e["t"] == "line":
         return [list(e["p1"]), list(e["p2"])]
+    if e["t"] == "ellipse":
+        c, a, b, t = e["c"], e["a"], e["b"], math.radians(e["rot"])
+        k = max(48, n)
+        ca, sa = math.cos(t), math.sin(t)
+        return [[c[0] + a * math.cos(th) * ca - b * math.sin(th) * sa, c[1] + a * math.cos(th) * sa + b * math.sin(th) * ca]
+                for th in (2 * math.pi * i / k for i in range(k + 1))]
+    if e["t"] == "spline":
+        import numpy as np
+        pts = _distinct(e["pts"])
+        if len(pts) < 3:
+            return pts
+        edge = cq.Edge.makeSpline([cq.Vector(p[0], p[1], 0) for p in pts])
+        return [[v.x, v.y] for v in edge.positions(np.linspace(0, 1, max(n, 12 * len(pts))))]
     s = 360.0 if e["t"] == "circle" else span(e)
     a0 = 0.0 if e["t"] == "circle" else e["a0"]
     k = max(8, int(n * s / 360.0))
     return [_pt(e, a0 + s * i / k) for i in range(k + 1)]
 
 
+def _poly_dist(poly, p) -> float:
+    best = 1e300
+    for a, b in zip(poly, poly[1:]):
+        best = min(best, dist_point({"t": "line", "p1": a, "p2": b}, p))
+    return best
+
+
 def dist_point(e, p) -> float:
+    if e["t"] in ("ellipse", "spline"):
+        return _poly_dist(sample(e, 96), p)
     px, py = p
     if e["t"] == "line":
         (x1, y1), (x2, y2) = e["p1"], e["p2"]
@@ -195,6 +256,8 @@ def _circle_circle(a, b):
 
 
 def intersections(a, b):
+    if a["t"] in ("ellipse", "spline") or b["t"] in ("ellipse", "spline"):
+        return []                                  # 橢圓/樣條不支援求交(修整時視為整條刪除)
     if a["t"] == "line" and b["t"] == "line":
         return _line_line(a, b)
     if a["t"] == "line":
@@ -232,6 +295,8 @@ def split_entity(e, pts):
 def trim(entities, idx, click):
     """修整:在與其他圖元的交點處切開,刪除點擊位置所在的那一段。"""
     e = entities[idx]
+    if e["t"] in ("ellipse", "spline"):
+        return entities[:idx] + entities[idx + 1:]
     pts = [p for j, o in enumerate(entities) if j != idx for p in intersections(e, o)]
     rest = entities[:idx] + entities[idx + 1:]
     pieces = split_entity(e, pts) if pts else []
@@ -246,7 +311,13 @@ def _map(e, fp, fa=None, flip=False):
     """對圖元套用點變換 fp;圓弧另用 fa 轉角度,flip=True 表示變換反轉方向(鏡射)。"""
     e = copy.deepcopy(e)
     e.pop("id", None)                       # 複製出來的圖元是新圖元
-    if e["t"] == "line":
+    if e["t"] == "spline":
+        e["pts"] = [fp(q) for q in e["pts"]]
+    elif e["t"] == "ellipse":
+        e["c"] = fp(e["c"])
+        if fa:
+            e["rot"] = fa(e["rot"]) % 180.0
+    elif e["t"] == "line":
         e["p1"], e["p2"] = fp(e["p1"]), fp(e["p2"])
     else:
         e["c"] = fp(e["c"])
@@ -334,6 +405,7 @@ def _close(a, b, tol=1e-5):
 
 def closed_loops(entities):
     """找出封閉輪廓。回傳 [[(圖元, 是否反向), ...], ...];只支援單純封閉鏈(每個接點恰連兩段)。"""
+    entities = profile_entities(entities)
     loops = [[(e, False)] for e in entities if is_closed_by_itself(e)]
     segs = [e for e in entities if not is_closed_by_itself(e)]
     used = [False] * len(segs)
@@ -406,6 +478,12 @@ def profiles(entities):
 # --- 轉成 CadQuery(局部座標,平面在 z=0) ---
 def _edge(e, rev=False):
     V = lambda p: cq.Vector(p[0], p[1], 0)  # noqa: E731
+    if e["t"] == "ellipse":
+        t = math.radians(e["rot"])
+        return cq.Edge.makeEllipse(e["a"], e["b"], V(e["c"]), cq.Vector(0, 0, 1), cq.Vector(math.cos(t), math.sin(t), 0))
+    if e["t"] == "spline":
+        pts = e["pts"][::-1] if rev else e["pts"]
+        return cq.Edge.makeSpline([V(p) for p in pts])
     if is_closed_by_itself(e):
         return cq.Edge.makeCircle(e["r"], V(e["c"]), cq.Vector(0, 0, 1))
     if e["t"] == "line":
@@ -470,9 +548,10 @@ def polylines_global(entities, wp, segments=None):
 # --- 掃掠 ---
 def ordered_chain(entities):
     """把草圖圖元排成單一連續路徑 [(圖元, 是否反向), ...](可為封閉)。不是單一連續線時丟出錯誤。"""
+    entities = profile_entities(entities)
     segs = [e for e in entities if not is_closed_by_itself(e)]
     if not segs or len(segs) != len(entities):
-        raise ValueError("路徑草圖只能包含相連的線與圓弧(不可有整圓)")
+        raise ValueError("路徑草圖只能包含相連的線、圓弧與樣條(不可有整圓或橢圓)")
     ends = [endpoints(e) for e in segs]
     # 端點 -> 連到它的 (線段, 端) 清單
     def at(pt, skip):
@@ -500,3 +579,163 @@ def ordered_chain(entities):
 def path_wire(entities, wp):
     """路徑草圖 -> 全域座標的 Wire。"""
     return to_global(_wire(ordered_chain(entities)), wp)
+
+
+# ---------------- 2D 圓角 / 倒角 / 偏移 / 投影 ----------------
+def _shared_corner(ea, eb, tol=1e-6):
+    """兩條直線共用的端點:回傳 (角點, a 的另一端, b 的另一端);沒有共用端點則丟出錯誤。"""
+    for ka, pa in enumerate((ea["p1"], ea["p2"])):
+        for kb, pb in enumerate((eb["p1"], eb["p2"])):
+            if math.hypot(pa[0] - pb[0], pa[1] - pb[1]) < tol:
+                return list(pa), list(ea["p2" if ka == 0 else "p1"]), list(eb["p2" if kb == 0 else "p1"])
+    raise ValueError("兩條線沒有共用端點,無法倒圓角/倒角(請先讓兩線相接)")
+
+
+def _corner_geometry(entities, i, j):
+    if i == j or entities[i]["t"] != "line" or entities[j]["t"] != "line":
+        raise ValueError("請選兩條不同的直線")
+    P, A, B = _shared_corner(entities[i], entities[j])
+    u = np_unit((A[0] - P[0], A[1] - P[1]))
+    v = np_unit((B[0] - P[0], B[1] - P[1]))
+    cosang = max(-1.0, min(1.0, u[0] * v[0] + u[1] * v[1]))
+    theta = math.acos(cosang)
+    if theta < 1e-6 or abs(theta - math.pi) < 1e-6:
+        raise ValueError("兩條線共線或重疊,無法倒角")
+    return P, A, B, u, v, theta
+
+
+def np_unit(v):
+    L = math.hypot(v[0], v[1])
+    if L < 1e-12:
+        raise ValueError("線段長度為 0")
+    return (v[0] / L, v[1] / L)
+
+
+def _trim_lines(entities, i, j, P, A, B, ta, tb):
+    """把 i、j 兩線在角點 P 處各縮短 ta、tb(沿各自方向),回傳 (新線 i, 新線 j, 切點 Ta, 切點 Tb, 其餘圖元)。"""
+    la, lb = math.hypot(A[0] - P[0], A[1] - P[1]), math.hypot(B[0] - P[0], B[1] - P[1])
+    if ta > la - 1e-9 or tb > lb - 1e-9:
+        raise ValueError("圓角半徑/倒角距離過大:超過線段長度")
+    u, v = np_unit((A[0] - P[0], A[1] - P[1])), np_unit((B[0] - P[0], B[1] - P[1]))
+    Ta, Tb = (P[0] + u[0] * ta, P[1] + u[1] * ta), (P[0] + v[0] * tb, P[1] + v[1] * tb)
+    return line(Ta, A), line(Tb, B), Ta, Tb, [e for k, e in enumerate(entities) if k not in (i, j)]
+
+
+def fillet_corner(entities, i, j, r):
+    """兩條相接直線的 2D 圓角(半徑 r)。回傳新的圖元清單(舊兩線被縮短並加上圓弧)。"""
+    if r <= 0:
+        raise ValueError("圓角半徑必須大於 0")
+    P, A, B, u, v, theta = _corner_geometry(entities, i, j)
+    t = r / math.tan(theta / 2)
+    la, lb, Ta, Tb, rest = _trim_lines(entities, i, j, P, A, B, t, t)
+    bis = np_unit((u[0] + v[0], u[1] + v[1]))
+    d = r / math.sin(theta / 2)
+    C = (P[0] + bis[0] * d, P[1] + bis[1] * d)
+    mid = (C[0] - bis[0] * r, C[1] - bis[1] * r)                  # 弧上最靠近角點的那一點
+    return rest + [la, lb, arc_from_3pts(Ta, mid, Tb)]
+
+
+def chamfer_corner(entities, i, j, d1, d2=None):
+    """兩條相接直線的 2D 倒角(沿各線退 d1、d2,以斜線連接)。"""
+    d2 = d1 if d2 is None else d2
+    if d1 <= 0 or d2 <= 0:
+        raise ValueError("倒角距離必須大於 0")
+    P, A, B, u, v, theta = _corner_geometry(entities, i, j)
+    la, lb, Ta, Tb, rest = _trim_lines(entities, i, j, P, A, B, d1, d2)
+    return rest + [la, lb, line(Ta, Tb)]
+
+
+def _entities_from_wire(wire):
+    """把(局部座標)OCC Wire 轉回草圖圖元:直線、圓弧;其他曲線以樣條近似。"""
+    import numpy as np
+    out = []
+    for e in wire.Edges():
+        if e.geomType() == "LINE":
+            a, b = e.startPoint(), e.endPoint()
+            if math.hypot(b.x - a.x, b.y - a.y) > 1e-9:
+                out.append(line((a.x, a.y), (b.x, b.y)))
+        elif e.geomType() == "CIRCLE":
+            pts = [e.positionAt(t) for t in (0, 0.5, 1)]
+            if e.IsClosed():
+                c = e.arcCenter()
+                out.append(circle((c.x, c.y), e.radius()))
+            else:
+                out.append(arc_from_3pts(*[(p.x, p.y) for p in pts]))
+        else:
+            ps = [e.positionAt(t) for t in np.linspace(0, 1, 24)]
+            out.append(spline([(p.x, p.y) for p in ps]))
+    return out
+
+
+def offset_entity(e, d):
+    """單一圖元的偏移:直線往左側平移 d、圓/圓弧半徑加 d(d 為負則縮小)、橢圓不支援。"""
+    if e["t"] == "line":
+        (x1, y1), (x2, y2) = e["p1"], e["p2"]
+        nx, ny = np_unit((-(y2 - y1), x2 - x1))
+        return line((x1 + nx * d, y1 + ny * d), (x2 + nx * d, y2 + ny * d))
+    if e["t"] in ("circle", "arc"):
+        r = e["r"] + d
+        if r <= 1e-9:
+            raise ValueError("偏移後半徑小於等於 0")
+        return circle(e["c"], r) if e["t"] == "circle" else arc(e["c"], r, e["a0"], e["a1"])
+    raise ValueError("橢圓與樣條不支援偏移")
+
+
+def offset_loop(entities, idx, d):
+    """偏移包含 entities[idx] 的封閉輪廓(正值向外、負值向內),回傳偏移後的圖元清單(不含原圖元)。"""
+    loops = closed_loops(entities)
+    target = entities[idx]
+    loop = next((lp for lp in loops if any(e is target for e, _ in lp)), None)
+    if loop is None:
+        raise ValueError("所選圖元不屬於封閉輪廓")
+    if len(loop) == 1:
+        return [offset_entity(loop[0][0], d)]
+    poly = _loop_polygon(loop)
+    outward = d if _area(poly) > 0 else -d                    # 逆時針的輪廓,wire.offset2D 正值為向外
+    res = _wire(loop).offset2D(outward, "intersection")
+    out = []
+    for w in res:
+        out += _entities_from_wire(w)
+    if not out:
+        raise ValueError("偏移結果為空(距離過大?)")
+    return out
+
+
+def project_shape_edges(shape, wp, construction=True):
+    """把實體的所有邊投影到工作平面(草圖座標),轉成草圖圖元。"""
+    from .features import plane_from_dict
+    fG = plane_from_dict(wp).fG
+    out, seen = [], set()
+
+    def add(e):
+        if construction:
+            e["construction"] = True
+        if e["t"] == "line":                                  # 方向相反的同一條線視為重複
+            key = ("line", tuple(sorted((tuple(e["p1"]), tuple(e["p2"])))))
+        else:
+            key = repr(sorted((k, repr(v)) for k, v in e.items() if k != "construction"))
+        if key not in seen:
+            seen.add(key)
+            out.append(e)
+
+    import numpy as np
+    for edge in shape.Edges():
+        le = edge.transformShape(fG)
+        t = le.geomType()
+        if t == "LINE":
+            a, b = le.startPoint(), le.endPoint()
+            if math.hypot(b.x - a.x, b.y - a.y) > 1e-6:
+                add(line((round(a.x, 6), round(a.y, 6)), (round(b.x, 6), round(b.y, 6))))
+        elif t == "CIRCLE" and abs(abs(le.normal().z) - 1) < 1e-6 if hasattr(le, "normal") else False:
+            c = le.arcCenter()
+            if le.IsClosed():
+                add(circle((round(c.x, 6), round(c.y, 6)), round(le.radius(), 6)))
+            else:
+                ps = [le.positionAt(k) for k in (0, 0.5, 1)]
+                add(arc_from_3pts(*[(p.x, p.y) for p in ps]))
+        else:
+            ps = [le.positionAt(k) for k in np.linspace(0, 1, 32)]
+            xy = [(p.x, p.y) for p in ps]
+            if max(math.hypot(a[0] - b[0], a[1] - b[1]) for a in xy for b in xy) > 1e-6:
+                add(spline(xy))
+    return out

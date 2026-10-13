@@ -56,11 +56,12 @@ def set_vars(e, v):
 class _Ctx:
     def __init__(self, entities):
         self.info, off = {}, 0
-        for e in entities:
+        solvable = [e for e in entities if e["t"] in _NV]          # 橢圓、樣條不參與求解(原樣保留)
+        for e in solvable:
             self.info[e["id"]] = (e["t"], off)
             off += _NV[e["t"]]
         self.n = off
-        self.x0 = np.concatenate([get_vars(e) for e in entities]) if entities else np.zeros(0)
+        self.x0 = np.concatenate([get_vars(e) for e in solvable]) if solvable else np.zeros(0)
 
     def P(self, x, ref):
         t, o = self.info[ref[0]]
@@ -213,7 +214,7 @@ def _lm(f, x0, max_iter=200):
 # --- 對外 API ---
 def solve(entities, constraints):
     """求解拘束。回傳 (成功?, 新圖元清單, 自由度, 最大殘差)。失敗時圖元維持原樣。"""
-    if not entities:
+    if not entities or not any(e["t"] in _NV for e in entities):
         return True, entities, 0, 0.0
     ctx = _Ctx(entities)
     cons = [c for c in constraints if all(q[0] in ctx.info for q in c["refs"])]
@@ -225,6 +226,9 @@ def solve(entities, constraints):
     if ok:
         out, off = [], 0
         for e in entities:
+            if e["t"] not in _NV:
+                out.append(e)
+                continue
             n = _NV[e["t"]]
             out.append(set_vars(e, x[off:off + n]))
             off += n

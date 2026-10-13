@@ -526,3 +526,93 @@ def test_draft_and_rib_dialogs(monkeypatch):
         "sketch": f"{w.doc.sketches[-1][0]}: x", "thickness": 3.0, "symmetric": True, "flip": False})
     w.on_rib()
     assert w.doc.features[-1].kind == "rib" and abs(w.doc.bodies[0].shape.Volume() - base - 216) < 1e-3
+
+
+def test_sketch_extra_tools_ellipse_spline_fillet_offset_projection():
+    from core import sketch2d as S
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow()
+    w.resize(1400, 900)
+    w.show()
+    w.doc.add_feature("box", {"x": 40, "y": 30, "z": 10})
+    w._update()
+    w._set_lock({"origin": [0, 0, 5], "xdir": [1, 0, 0], "normal": [0, 0, 1]})
+
+    def pump(n=8):
+        for _ in range(n):
+            app.processEvents()
+            time.sleep(0.02)
+
+    pump(30)
+    w.on_new_sketch()
+    ed, pl = w._sk["ed"], w.scene.plotter
+    ed.grid = False
+    pump(8)
+
+    def click(uv):
+        P = ed.to3d(uv)
+        r = pl.renderer
+        r.SetWorldPoint(*P, 1.0)
+        r.WorldToDisplay()
+        x, y, _ = r.GetDisplayPoint()
+        pt = QPoint(int(round(x)), int(round(pl.height() - y)))
+        QTest.mouseMove(pl, pt)
+        pump(2)
+        QTest.mouseClick(pl, Qt.LeftButton, Qt.NoModifier, pt)
+        pump(3)
+
+    # 橢圓:中心、長軸端點、短軸方向的點
+    ed.set_tool("ellipse")
+    click((-10, 8))
+    click((-2, 8))
+    click((-10, 12))
+    el = ed.entities[-1]
+    assert el["t"] == "ellipse" and abs(el["a"] - 8) < 0.2 and abs(el["b"] - 4) < 0.2 and abs(el["rot"]) < 1
+    # 樣條:4 點,右鍵(取消目前操作)完成
+    ed.set_tool("spline")
+    for p in ((0, -8), (4, -2), (8, -8), (12, -2)):
+        click(p)
+    ed.cancel_op()
+    assert ed.entities[-1]["t"] == "spline" and len(ed.entities[-1]["pts"]) == 4
+    # 矩形 -> 圓角 -> 倒角
+    ed.set_tool("rect")
+    click((10, 0))
+    click((18, 8))
+    answers = iter([2.0, 1.0])
+    ed.ask_value = lambda title, cur: next(answers)
+    n_before = len(ed.entities)
+    ed.set_tool("fillet2d")
+    click((14, 0))                                     # 下邊
+    click((18, 4))                                     # 右邊 -> 右下角圓角 R2
+    assert any(e["t"] == "arc" and abs(e["r"] - 2) < 1e-6 for e in ed.entities)
+    assert len(ed.entities) == n_before + 1            # 兩線縮短 + 新圓弧
+    ed.set_tool("chamfer2d")
+    click((14, 8))                                     # 上邊
+    click((18, 6))                                     # 右邊(已縮短,但上端仍在右上角)
+    assert sum(1 for e in ed.entities if e["t"] == "line") >= 5
+    assert any(e["t"] == "line" and abs(((e["p1"][0]-e["p2"][0])**2+(e["p1"][1]-e["p2"][1])**2)**.5 - 2**.5) < 0.05 for e in ed.entities)
+    # 偏移:整個矩形外輪廓向外 1(已有圓角/倒角,改偏移圓)
+    ed.set_tool("circle")
+    click((-12, -8))
+    click((-9, -8))
+    answers = iter([2.0])
+    ed.set_tool("offset")
+    click((-9, -8))
+    radii = sorted(e["r"] for e in ed.entities if e["t"] == "circle")
+    assert len(radii) == 2 and abs(radii[0] - 3) < 0.3 and abs(radii[1] - radii[0] - 2) < 1e-9
+    # 構造線切換:選取圓再切換
+    ed.set_tool("select")
+    click((-9, -8))
+    ed.toggle_construction()
+    assert sum(1 for e in ed.entities if e.get("construction")) == 1
+    assert len(S.profiles(ed.entities)) >= 1
+    # 投影模型邊
+    n = len(ed.entities)
+    ed.project_shape(w.doc.bodies[0].shape, True)
+    assert len(ed.entities) == n + 4 and all(e.get("construction") for e in ed.entities[n:])
+    ed.undo()
+    assert len(ed.entities) == n
+    w.on_sk_finish()
+    assert w._sk is None and len(w.doc.sketches) == 1
+    kinds = {e["t"] for e in w.doc.sketches[0][2]["entities"]}
+    assert {"ellipse", "spline", "arc", "line", "circle"} <= kinds

@@ -13,6 +13,7 @@ from core.numfmt import fmtn
 TOOLS = {
     "select": "選取", "line": "線", "rect": "矩形", "circle": "圓", "arc": "圓弧(三點)",
     "trim": "修整", "delete": "刪除", "mirror2": "鏡射(兩點定軸)",
+    "ellipse": "橢圓", "spline": "樣條", "fillet2d": "圓角", "chamfer2d": "倒角", "offset": "偏移",
 }
 # 拘束/標註工具: 工具 -> (標籤, 拘束類型, 可接受的選取序列) ;P=點 L=直線 C=圓/圓弧 E=任一圖元
 CONSTRAINT_TOOLS = {
@@ -45,8 +46,13 @@ HINTS = {
     "trim": "點選要修整掉的線段(到相鄰交點為止)",
     "delete": "點選要刪除的圖元",
     "mirror2": "點選鏡射線的兩個點",
+    "ellipse": "點選中心,再點選長軸端點,最後點選短軸方向上的一點(決定短軸長度)",
+    "spline": "依序點選樣條通過的各點(至少 3 點),完成請按右鍵或 Esc",
+    "fillet2d": "依序點選兩條相接的直線,再輸入圓角半徑",
+    "chamfer2d": "依序點選兩條相接的直線,再輸入倒角距離",
+    "offset": "點選要偏移的圖元(封閉輪廓會整圈偏移),再輸入距離:正值向外/左側,負值向內/右側",
 }
-ACTORS = ("sk_ent", "sk_sel", "sk_prev", "sk_snap", "sk_axes", "sk_dims", "sk_dimlbl", "sk_cons", "sk_hi", "sk_coin")
+ACTORS = ("sk_ent", "sk_con", "sk_sel", "sk_prev", "sk_snap", "sk_axes", "sk_dims", "sk_dimlbl", "sk_cons", "sk_hi", "sk_coin")
 
 
 def lines_poly(polys) -> pv.PolyData:
@@ -69,6 +75,7 @@ class SketchEditor:
         self.constraints = copy.deepcopy(constraints or [])
         self.highlight = []                       # 要強調的圖元編號(選取拘束時)
         self.pick_buf: list = []                  # 拘束工具已選取的參照
+        self.pick_idx: list = []                  # 圓角/倒角工具已選的圖元索引
         self.ask_value = lambda title, current: None   # 由主視窗提供數值輸入對話框
         self.sel: set[int] = set()
         self.tool = "line"
@@ -203,6 +210,28 @@ class SketchEditor:
                     self._mutate()
                     ents.append(a)
                 self.pts = []
+        elif t == "ellipse":
+            self.pts.append(pt)
+            if len(self.pts) == 3:
+                c, m, q = self.pts
+                a = S_dist(c, m)
+                rot = math.degrees(math.atan2(m[1] - c[1], m[0] - c[0]))
+                ux, uy = (m[0] - c[0]) / (a or 1), (m[1] - c[1]) / (a or 1)
+                b = abs((q[0] - c[0]) * uy - (q[1] - c[1]) * ux)          # q 到長軸的垂直距離
+                try:
+                    el = S.ellipse(c, a, b, rot)
+                except ValueError as e:
+                    self.status(str(e))
+                else:
+                    self._mutate()
+                    ents.append(el)
+                self.pts = []
+        elif t == "spline":
+            self.pts.append(pt)
+        elif t in ("fillet2d", "chamfer2d"):
+            self._corner_pick(raw, tol)
+        elif t == "offset":
+            self._offset_pick(raw, tol)
         elif t == "mirror2":
             self.pts.append(pt)
             if len(self.pts) == 2:
@@ -226,6 +255,8 @@ class SketchEditor:
 
     @staticmethod
     def _parts(e):
+        if e["t"] in ("ellipse", "spline"):
+            return []                                        # 橢圓/樣條不支援拘束
         return ["p1", "p2"] if e["t"] == "line" else (["c"] if e["t"] == "circle" else ["c", "s", "e"])
 
     @staticmethod
@@ -258,9 +289,85 @@ class SketchEditor:
                                 not self._has_coincident([e["id"], part], [o["id"], op]):
                             self._add_raw({"t": "coincident", "refs": [[e["id"], part], [o["id"], op]]})
 
+    # --- 2D 圓角 / 倒角 / 偏移 ---
+    def _corner_pick(self, raw, tol):
+        ents = self.entities
+        i = S.nearest_entity(ents, raw, tol)
+        if i is None or ents[i]["t"] != "line":
+            self.status("請點選直線")
+            return
+        if i in self.pick_idx:
+            return
+        self.pick_idx.append(i)
+        if len(self.pick_idx) < 2:
+            self.status(f"{TOOLS[self.tool]}:已選第一條線,請選第二條線")
+            return
+        a, b = self.pick_idx
+        self.pick_idx = []
+        fillet = self.tool == "fillet2d"
+        val = self.ask_value("圓角半徑" if fillet else "倒角距離", 2.0)
+        if val is None:
+            self.status("已取消")
+            return
+        try:
+            new = S.fillet_corner(ents, a, b, val) if fillet else S.chamfer_corner(ents, a, b, val)
+        except ValueError as e:
+            self.status(str(e))
+            return
+        self._mutate()
+        self.entities = new
+        self.sel.clear()
+
+    def _offset_pick(self, raw, tol):
+        ents = self.entities
+        i = S.nearest_entity(ents, raw, tol)
+        if i is None:
+            return
+        val = self.ask_value("偏移距離(正=向外/左側,負=向內/右側)", 2.0)
+        if val is None or abs(val) < 1e-9:
+            self.status("已取消")
+            return
+        try:
+            loops = S.closed_loops(ents)
+            in_loop = any(len(lp) > 1 and any(e is ents[i] for e, _ in lp) for lp in loops)
+            new = S.offset_loop(ents, i, val) if in_loop else [S.offset_entity(ents[i], val)]
+        except ValueError as e:
+            self.status(str(e))
+            return
+        self._mutate()
+        ents.extend(new)
+
+    def toggle_construction(self):
+        """所選圖元在「一般」與「構造線」之間切換(構造線不參與輪廓,只當參考)。"""
+        if not self.sel:
+            self.status("請先用「選取」工具選取要切換的圖元")
+            return
+        self._mutate()
+        for i in self.sel:
+            e = self.entities[i]
+            if e.get("construction"):
+                e.pop("construction")
+            else:
+                e["construction"] = True
+        self.sel.clear()
+        self._changed()
+
+    def project_shape(self, shape, construction=True):
+        """把實體的邊投影到草圖平面(預設當構造線,可吸附端點/圓心再描繪)。"""
+        new = S.project_shape_edges(shape, self.wp, construction)
+        if not new:
+            self.status("沒有可投影的邊")
+            return
+        self._mutate()
+        n0 = len(self.entities)
+        self.entities.extend(new)
+        self._after_edit(n0)
+        self.status(f"已投影 {len(new)} 個圖元" + ("(構造線)" if construction else ""))
+        self._changed()
+
     # --- 工具 / 編輯 ---
     def set_tool(self, tool):
-        self.tool, self.pts, self.pick_buf = tool, [], []
+        self.tool, self.pts, self.pick_buf, self.pick_idx = tool, [], [], []
         if tool in CONSTRAINT_TOOLS:
             label, _, seqs = CONSTRAINT_TOOLS[tool]
             what = "、".join({"P": "點", "L": "線", "C": "圓/弧", "E": "圖元"}[k] for k in seqs[0])
@@ -270,7 +377,15 @@ class SketchEditor:
         self._redraw()
 
     def cancel_op(self):
-        self.pts, self.pick_buf = [], []
+        if self.tool == "spline" and len(self.pts) >= 3:        # 樣條:右鍵/Esc 完成
+            self._mutate()
+            n0 = len(self.entities)
+            self.entities.append(S.spline(self.pts))
+            self._after_edit(n0)
+            self.pts = []
+            self._changed()
+            return
+        self.pts, self.pick_buf, self.pick_idx = [], [], []
         self._redraw()
 
     def typed(self, text):
@@ -386,7 +501,7 @@ class SketchEditor:
                 return best
         want = kinds - {"P"}
         if want:
-            cands = [(i, e) for i, e in enumerate(self.entities) if any(
+            cands = [(i, e) for i, e in enumerate(self.entities) if e["t"] in ("line", "circle", "arc") and any(
                 self._fits(k, "L" if e["t"] == "line" else "C") for k in want)]
             idx = S.nearest_entity([e for _, e in cands], raw, tol)
             if idx is not None:
@@ -491,7 +606,7 @@ class SketchEditor:
         names = []
         for r in c["refs"]:
             e = self._ent(r[0])
-            tag = {"line": "線", "circle": "圓", "arc": "弧"}[e["t"]] + str(e["id"])
+            tag = {"line": "線", "circle": "圓", "arc": "弧", "ellipse": "橢圓", "spline": "樣條"}[e["t"]] + str(e["id"])
             names.append(tag + (f".{r[1]}" if len(r) == 2 else ""))
         text = f"{K.NAMES[c['t']]} [{', '.join(names)}]"
         if c["t"] in K.DIMENSIONAL:
@@ -607,6 +722,16 @@ class SketchEditor:
                 return [S.circle(p[0], S_dist(p[0], h))] if S_dist(p[0], h) > 1e-9 else []
             if t == "arc" and len(p) == 2:
                 return [S.arc_from_3pts(p[0], p[1], h)]
+            if t == "ellipse":
+                if len(p) == 1:
+                    return [S.line(p[0], h)]
+                c, m = p
+                a = S_dist(c, m)
+                ux, uy = (m[0] - c[0]) / (a or 1), (m[1] - c[1]) / (a or 1)
+                return [S.ellipse(c, a, abs((h[0] - c[0]) * uy - (h[1] - c[1]) * ux),
+                                  math.degrees(math.atan2(m[1] - c[1], m[0] - c[0])))]
+            if t == "spline":
+                return [S.spline(p + [h])] if len(p) >= 2 else [S.line(p[-1], h)]
         except ValueError:
             pass
         return []
@@ -650,9 +775,11 @@ class SketchEditor:
         pl, wp = self.scene.plotter, self.wp
         for name in ACTORS:
             pl.remove_actor(name, render=False)
-        normal = [e for i, e in enumerate(self.entities) if i not in self.sel]
+        normal = [e for i, e in enumerate(self.entities) if i not in self.sel and not e.get("construction")]
+        constr = [e for i, e in enumerate(self.entities) if i not in self.sel and e.get("construction")]
         chosen = [e for i, e in enumerate(self.entities) if i in self.sel]
-        for name, ents, color, width in (("sk_ent", normal, "#ff8c00", 3), ("sk_sel", chosen, "#ff4d4d", 5),
+        for name, ents, color, width in (("sk_ent", normal, "#ff8c00", 3), ("sk_con", constr, "#8aa0c0", 1.5),
+                                         ("sk_sel", chosen, "#ff4d4d", 5),
                                          ("sk_prev", self._preview(), "#7fe0ff", 2)):
             if ents:
                 pl.add_mesh(lines_poly(S.polylines_global(ents, wp)), color=color, line_width=width,

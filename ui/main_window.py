@@ -920,7 +920,8 @@ class MainWindow(QMainWindow):
         self.sk_bar = bar
         grp = QActionGroup(self)
         self.sk_tool_actions = {}
-        for tool in ("select", "line", "rect", "circle", "arc", "trim", "delete"):
+        for tool in ("select", "line", "rect", "circle", "arc", "ellipse", "spline", "trim", "fillet2d", "chamfer2d",
+                     "offset", "delete"):
             act = QAction(SK_TOOLS[tool], self)
             act.setCheckable(True)
             act.triggered.connect(lambda _, t=tool: self._sk and self._sk["ed"].set_tool(t))
@@ -929,6 +930,8 @@ class MainWindow(QMainWindow):
             self.sk_tool_actions[tool] = act
         bar.addSeparator()
         for text, slot, key in (("鏡射...", self.on_sk_mirror, None), ("陣列...", self.on_sk_pattern, None),
+                                ("構造線切換", lambda: self._sk["ed"].toggle_construction(), None),
+                                ("投影模型邊...", self.on_sk_project, None),
                                 ("刪除所選", lambda: self._sk["ed"].delete_selected(), "Del"),
                                 ("復原", lambda: self._sk["ed"].undo(), "Ctrl+Z"),
                                 ("重做", lambda: self._sk["ed"].redo(), "Ctrl+Y"),
@@ -1062,7 +1065,7 @@ class MainWindow(QMainWindow):
             self._end_sketch()
 
     def _ask_value(self, title, current):
-        v, ok = QInputDialog.getDouble(self, f"尺寸:{title}", "數值:", current, -1e6, 1e6, 4)
+        v, ok = QInputDialog.getDouble(self, title, "數值:", current, -1e6, 1e6, 4)
         return v if ok else None
 
     def _sk_changed(self):
@@ -1129,6 +1132,18 @@ class MainWindow(QMainWindow):
             ("axis", "鏡射軸", "combo", ["草圖 Y 軸(左右鏡射)", "草圖 X 軸(上下鏡射)", "點選兩點指定"])], self)
         if v:
             self._sk["ed"].mirror_axis({"草圖 Y": "Y", "草圖 X": "X"}.get(v["axis"][:4]))
+
+    def on_sk_project(self):
+        bodies = self.doc.bodies
+        if not bodies:
+            QMessageBox.information(self, "草圖", "沒有可投影的實體")
+            return
+        items = [f"{b.id}: {b.name}" for b in bodies]
+        v = ask("投影模型邊到草圖平面", [("body", "實體", "combo", items),
+                                         ("construction", "當作構造線(參考用,不形成輪廓)", "bool", True)], self)
+        if v:
+            bid = int(v["body"].split(":")[0])
+            self._sk["ed"].project_shape(next(b.shape for b in bodies if b.id == bid), v["construction"])
 
     def on_sk_pattern(self):
         v = ask("陣列(對所選圖元;未選取則全部)", [
