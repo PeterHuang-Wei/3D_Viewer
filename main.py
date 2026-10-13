@@ -11,6 +11,8 @@ def main():
     win.show()
     if len(sys.argv) > 1:
         win.load(sys.argv[1])
+    else:
+        win.check_recovery()
     sys.exit(app.exec_())
 
 

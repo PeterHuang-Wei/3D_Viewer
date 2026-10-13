@@ -1,7 +1,7 @@
 """主視窗(繁體中文介面)。"""
 import os
 
-from PyQt5.QtCore import Qt, QSettings
+from PyQt5.QtCore import Qt, QSettings, QTimer, QStandardPaths
 from PyQt5.QtGui import QBrush, QColor, QFont
 from PyQt5.QtWidgets import (
     QMainWindow, QAction, QActionGroup, QFileDialog, QMessageBox, QListWidget, QListWidgetItem,
@@ -18,9 +18,10 @@ from viewer.quality import QUALITY, DEFAULT as DEFAULT_QUALITY
 from viewer.scene import Scene, VIEWS
 from core import measure as MS
 from core import numfmt
+from ui import session as S
 from core import materials as MAT
 from core import interference as IFC
-from core.numfmt import fmtn
+from core.numfmt import fmtn, fmtl, fmta, fmtv
 from viewer.measure_tool import TOOLS as MS_TOOLS, ANN_TOOLS
 from viewer.sketch_editor import SketchEditor, TOOLS as SK_TOOLS, CONSTRAINT_TOOLS
 from .dialogs import ask
@@ -90,6 +91,12 @@ class MainWindow(QMainWindow):
         self.scene.on_selection = self._show_selection
         self.scene.on_move = self._on_drag_move
         numfmt.set_precision(int(QSettings("3DViewer", "3DViewer").value("precision", 3)))   # 量測精度預設 .3f
+        u = QSettings("3DViewer", "3DViewer").value("unit", "mm")
+        numfmt.set_unit(u if u in numfmt.UNITS else "mm")
+        self.autosave_interval_ms = 60_000
+        self.autosave_timer = QTimer(self)
+        self.autosave_timer.timeout.connect(self.autosave_now)
+        self.autosave_timer.start(self.autosave_interval_ms)
         self.quality_actions = {}
         saved = QSettings("3DViewer", "3DViewer").value("quality", DEFAULT_QUALITY)
         if saved in QUALITY:
@@ -116,6 +123,9 @@ class MainWindow(QMainWindow):
         m.addAction(self._action("開啟專案...", self.on_open, "Ctrl+O"))
         m.addAction(self._action("儲存專案", self.on_save, "Ctrl+S"))
         m.addAction(self._action("另存專案...", self.on_save_as, "Ctrl+Shift+S"))
+        self.recent_menu = m.addMenu("最近開啟的檔案")
+        self.recent_menu.aboutToShow.connect(self._fill_recent)
+        self._fill_recent()
         m.addSeparator()
         m.addAction(self._action("匯入 STEP...", self.on_import_step))
         m.addAction(self._action("匯出 STEP...", self.on_export_step))
@@ -215,6 +225,14 @@ class MainWindow(QMainWindow):
         ms.addAction(self._action("質量屬性(含材料:質量/質心/慣性矩)...", self.on_mass_props))
         ms.addAction(self._action("干涉檢查(所有實體兩兩)...", self.on_interference))
         ms.addAction(self._action("量測小數位數...", self.on_precision))
+        um = ms.addMenu("顯示單位")
+        ug = QActionGroup(self)
+        self.unit_actions = {}
+        for u in numfmt.UNITS:
+            act = self._action(u, lambda _=False, u=u: self.set_unit(u), checkable=True, checked=(u == numfmt.UNIT))
+            ug.addAction(act)
+            um.addAction(act)
+            self.unit_actions[u] = act
         ms.addAction(self._action("清除畫面上的量測標註", self.on_measure_clear))
         ms.addAction(self._action("結束量測", self.on_measure_exit))
 
@@ -253,12 +271,87 @@ class MainWindow(QMainWindow):
         return r == QMessageBox.Yes
 
     def closeEvent(self, ev):
-        ev.accept() if self._confirm_discard() else ev.ignore()
+        if self._confirm_discard():
+            self.autosave_timer.stop()
+            S.clear_backup()
+            ev.accept()
+        else:
+            ev.ignore()
 
     def on_new(self):
         if self._confirm_discard():
             self.doc.clear()
+            S.clear_backup()
             self._update()
+
+    # --- 最近檔案 / 自動儲存 / 單位 ---
+    def _fill_recent(self):
+        self.recent_menu.clear()
+        files = S.recent_files()
+        for i, p in enumerate(files):
+            self.recent_menu.addAction(self._action(f"&{i + 1} {p}", lambda _=False, p=p: self.open_recent(p)))
+        if files:
+            self.recent_menu.addSeparator()
+            self.recent_menu.addAction(self._action("清除清單", self.clear_recent))
+        else:
+            empty = self._action("(無)", lambda: None)
+            empty.setEnabled(False)
+            self.recent_menu.addAction(empty)
+
+    def clear_recent(self):
+        S.clear_recent()
+        self._fill_recent()
+
+    def open_recent(self, path):
+        if not os.path.exists(path):
+            S.remove_recent(path)
+            self._fill_recent()
+            QMessageBox.warning(self, APP, f"檔案不存在,已從清單移除:\n{path}")
+            return
+        if self._confirm_discard():
+            self.load(path)
+
+    def autosave_now(self) -> bool:
+        """有未儲存的變更時寫入備份檔;回傳是否有寫入。"""
+        if not self.doc.dirty or not self.doc.features:
+            return False
+        try:
+            self.doc.write_backup(S.backup_path(), self.doc.path)
+        except OSError:
+            return False
+        return True
+
+    def check_recovery(self) -> bool:
+        """啟動時呼叫:若上次異常結束留有備份,詢問是否恢復。"""
+        info = S.read_backup_info()
+        if info is None:
+            return False
+        src = info.get("source") or "未命名專案"
+        r = QMessageBox.question(self, APP, f"偵測到上次未正常關閉留下的自動備份({src}),要恢復嗎?")
+        if r == QMessageBox.Yes:
+            return self.recover_backup()
+        S.clear_backup()
+        return False
+
+    def recover_backup(self) -> bool:
+        try:
+            info = S.read_backup_info()
+            self.doc.load_project(S.backup_path())
+            self.doc.path = info.get("source") if info else None
+            self.doc.dirty = True
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "恢復失敗", str(e))
+            return False
+        self._report_errors()
+        self._update()
+        return True
+
+    def set_unit(self, u):
+        numfmt.set_unit(u)
+        QSettings("3DViewer", "3DViewer").setValue("unit", u)
+        if u in getattr(self, "unit_actions", {}):
+            self.unit_actions[u].setChecked(True)
+        self.statusBar().showMessage(f"量測與屬性顯示單位:{u}(建模輸入仍為 mm)")
 
     def on_open(self):
         if not self._confirm_discard():
@@ -281,6 +374,7 @@ class MainWindow(QMainWindow):
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "開啟失敗", str(e))
             return
+        S.add_recent(path)
         self._report_errors()
         self._update()
 
@@ -314,6 +408,8 @@ class MainWindow(QMainWindow):
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "儲存失敗", str(e))
             return
+        S.add_recent(path)
+        S.clear_backup()
         self._update(reset_camera=False)
 
     def on_import_step(self):
@@ -824,14 +920,14 @@ class MainWindow(QMainWindow):
         pm = MAT.principal_moments(I)
         lines = [f"整體質量屬性(共 {len(items)} 個實體)",
                  f"總質量:{f(r['mass'])} g({f(r['mass'] / 1000)} kg)",
-                 f"總體積:{f(r['volume'])} mm³({f(r['volume'] / 1000)} cm³)",
-                 f"質心:({f(r['com'][0])}, {f(r['com'][1])}, {f(r['com'][2])}) mm",
+                 f"總體積:{fmtv(r['volume'])} {numfmt.UNIT}³({f(r['volume'] / 1000)} cm³)",
+                 f"質心:({fmtl(r['com'][0])}, {fmtl(r['com'][1])}, {fmtl(r['com'][2])}) {numfmt.UNIT}",
                  f"慣性矩(對質心,軸向平行座標軸,g·mm²):",
                  f"  Ixx={f(I[0][0])}  Iyy={f(I[1][1])}  Izz={f(I[2][2])}",
                  f"  Ixy={f(I[0][1])}  Ixz={f(I[0][2])}  Iyz={f(I[1][2])}",
                  f"主慣性矩:{f(pm[0])}, {f(pm[1])}, {f(pm[2])}", "", "各實體:"]
         for p in r["parts"]:
-            lines.append(f"  {p['name']}:密度 {f(p['density'])} g/cm³,體積 {f(p['volume'])} mm³,質量 {f(p['mass'])} g")
+            lines.append(f"  {p['name']}:密度 {f(p['density'])} g/cm³,體積 {fmtv(p['volume'])} {numfmt.UNIT}³,質量 {f(p['mass'])} g")
         if notes:
             lines.append(f"\n※ 未指定材料的實體({'、'.join(notes)})以「{v['default']}」計算。")
         text = "\n".join(lines)
@@ -862,8 +958,8 @@ class MainWindow(QMainWindow):
             for r in res:
                 c = r["center"]
                 lines.append(f"  {r['a'][1]} ∩ {r['b'][1]}:{r['kind']}"
-                             + (f",重疊體積 {fmtn(r['volume'])} mm³" if r["kind"] == "干涉" else "")
-                             + f",位置 ({fmtn(c.x)}, {fmtn(c.y)}, {fmtn(c.z)})")
+                             + (f",重疊體積 {fmtv(r['volume'])} {numfmt.UNIT}³" if r["kind"] == "干涉" else "")
+                             + f",位置 ({fmtl(c.x)}, {fmtl(c.y)}, {fmtl(c.z)}) {numfmt.UNIT}")
                 if r["shape"] is not None:
                     self.scene.measure.add_marker((c.x, c.y, c.z), "INT", mesh=shape_to_mesh(r["shape"], 0.02, 0.1))
             text = "\n".join(lines)
@@ -903,11 +999,12 @@ class MainWindow(QMainWindow):
         p = MS.body_properties(body.shape)
         c = p["center"]
         f = fmtn
-        text = (f"實體:{body.name}\n體積:{f(p['volume'])} mm³\n表面積:{f(p['area'])} mm²\n"
-                f"質心:({f(c.x)}, {f(c.y)}, {f(c.z)})\n"
-                f"外型尺寸(X×Y×Z):{f(p['size'][0])} × {f(p['size'][1])} × {f(p['size'][2])} mm\n"
-                f"邊界框:({f(p['min'][0])}, {f(p['min'][1])}, {f(p['min'][2])}) ~ "
-                f"({f(p['max'][0])}, {f(p['max'][1])}, {f(p['max'][2])})")
+        U = numfmt.UNIT
+        text = (f"實體:{body.name}\n體積:{fmtv(p['volume'])} {U}³\n表面積:{fmta(p['area'])} {U}²\n"
+                f"質心:({fmtl(c.x)}, {fmtl(c.y)}, {fmtl(c.z)})\n"
+                f"外型尺寸(X×Y×Z):{fmtl(p['size'][0])} × {fmtl(p['size'][1])} × {fmtl(p['size'][2])} {U}\n"
+                f"邊界框:({fmtl(p['min'][0])}, {fmtl(p['min'][1])}, {fmtl(p['min'][2])}) ~ "
+                f"({fmtl(p['max'][0])}, {fmtl(p['max'][1])}, {fmtl(p['max'][2])})")
         self.measure_text.appendPlainText(text + "\n")
         self.measure_dock.show()
         QMessageBox.information(self, "實體屬性", text)

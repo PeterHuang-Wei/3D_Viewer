@@ -15,3 +15,30 @@ def fmtn(v: float) -> str:
         return "0"                               # 避免 -0
     s = f"{v:.{p}f}"
     return s.rstrip("0").rstrip(".") if "." in s else s
+
+
+# --- 顯示單位(內部一律 mm,僅影響量測/屬性文字的顯示)---
+UNITS = {"mm": 1.0, "cm": 10.0, "m": 1000.0, "in": 25.4}
+UNIT = "mm"
+
+
+def set_unit(u: str) -> None:
+    global UNIT
+    if u not in UNITS:
+        raise ValueError(f"不支援的單位:{u}")
+    UNIT = u
+
+
+def fmtl(v: float) -> str:
+    """長度(mm)轉成目前顯示單位後格式化,不含單位字尾。"""
+    return fmtn(v / UNITS[UNIT])
+
+
+def fmta(v: float) -> str:
+    """面積(mm²)轉成目前單位²。"""
+    return fmtn(v / UNITS[UNIT] ** 2)
+
+
+def fmtv(v: float) -> str:
+    """體積(mm³)轉成目前單位³。"""
+    return fmtn(v / UNITS[UNIT] ** 3)

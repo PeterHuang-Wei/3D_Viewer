@@ -1,6 +1,7 @@
 """文件模型:以「特徵歷史」記錄建模步驟,可重算、復原/重做、存成專案檔。"""
 import copy
 import json
+import os
 from dataclasses import dataclass, field
 
 import cadquery as cq
@@ -412,13 +413,24 @@ class Document:
             raise ValueError("STL 匯出失敗")
         return stl_triangle_count(path)
 
-    def save_project(self, path: str) -> None:
-        data = {"app": "3D Viewer", "version": FORMAT_VERSION,
+    def to_data(self) -> dict:
+        return {"app": "3D Viewer", "version": FORMAT_VERSION,
                 "features": [f.to_dict() for f in self.features], "rollback": self.rollback,
                 "variables": self.variables}
+
+    def save_project(self, path: str) -> None:
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
+            json.dump(self.to_data(), f, ensure_ascii=False)
         self.path, self.dirty = path, False
+
+    def write_backup(self, path: str, source: str | None = None) -> None:
+        """寫入自動儲存備份:不改變 path / dirty。source 記錄原專案路徑。"""
+        data = self.to_data()
+        data["source"] = source
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, path)
 
     def load_project(self, path: str) -> None:
         with open(path, encoding="utf-8") as f:

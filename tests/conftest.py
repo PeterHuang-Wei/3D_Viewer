@@ -36,3 +36,19 @@ def _keep_and_close_windows(monkeypatch):
     except Exception:  # noqa: BLE001
         pass
     gc.collect()
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _isolated_settings(tmp_path_factory):
+    """QSettings 與自動備份改寫到暫存目錄,避免污染使用者環境。"""
+    import os
+    d = tmp_path_factory.mktemp("cfg")
+    os.environ["XDG_CONFIG_HOME"] = str(d / "config")
+    os.environ["XDG_DATA_HOME"] = str(d / "data")
+    try:
+        from PyQt5.QtCore import QSettings
+        QSettings.setPath(QSettings.NativeFormat, QSettings.UserScope, str(d / "config"))
+        QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, str(d / "config"))
+    except Exception:  # noqa: BLE001
+        pass
+    yield

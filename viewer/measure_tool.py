@@ -6,7 +6,8 @@ import numpy as np
 import pyvista as pv
 
 from core import measure as M
-from core.numfmt import fmtn
+from core import numfmt
+from core.numfmt import fmtn, fmtl, fmta
 from .picking import face_at, nearest_body
 from .sketch_editor import lines_poly
 
@@ -42,6 +43,10 @@ class Pick:
 
 def _fmt(v: float) -> str:
     return fmtn(v)                              # 固定小數位數(預設 .3f)
+
+
+def _L(v: float) -> str:
+    return fmtl(v)                              # 長度,依顯示單位換算
 
 
 class MeasureTool:
@@ -144,9 +149,9 @@ class MeasureTool:
     def _do_point(self, picks):
         a, b = picks
         r = M.point_distance(self._v(a.point), self._v(b.point))
-        text = (f"點到點距離 = {_fmt(r['distance'])} mm\n  ΔX={_fmt(r['dx'])}  ΔY={_fmt(r['dy'])}  ΔZ={_fmt(r['dz'])}\n"
-                f"  P1=({_fmt(a.point[0])}, {_fmt(a.point[1])}, {_fmt(a.point[2])})  "
-                f"P2=({_fmt(b.point[0])}, {_fmt(b.point[1])}, {_fmt(b.point[2])})")
+        text = (f"點到點距離 = {_L(r['distance'])} {numfmt.UNIT}\n  ΔX={_L(r['dx'])}  ΔY={_L(r['dy'])}  ΔZ={_L(r['dz'])}\n"
+                f"  P1=({_L(a.point[0])}, {_L(a.point[1])}, {_L(a.point[2])})  "
+                f"P2=({_L(b.point[0])}, {_L(b.point[1])}, {_L(b.point[2])})")
         return {"text": text, "lines": [np.array([a.point, b.point])], "points": [a.point, b.point],
                 "label": ((a.point + b.point) / 2, _fmt(r["distance"])), "hi": []}
 
@@ -154,37 +159,37 @@ class MeasureTool:
         a, b = picks
         d, p, q = M.min_distance(a.sub, b.sub)
         p, q = np.array(p.toTuple()), np.array(q.toTuple())
-        text = (f"最短距離({self._kind_name(a)}-{self._kind_name(b)}) = {_fmt(d)} mm\n"
-                f"  最近點 ({_fmt(p[0])}, {_fmt(p[1])}, {_fmt(p[2])}) → ({_fmt(q[0])}, {_fmt(q[1])}, {_fmt(q[2])})")
+        text = (f"最短距離({self._kind_name(a)}-{self._kind_name(b)}) = {_L(d)} {numfmt.UNIT}\n"
+                f"  最近點 ({_L(p[0])}, {_L(p[1])}, {_L(p[2])}) → ({_L(q[0])}, {_L(q[1])}, {_L(q[2])})")
         return {"text": text, "lines": [np.array([p, q])] if d > 1e-9 else [], "points": [p, q],
-                "label": ((p + q) / 2, _fmt(d)), "hi": [self._hi(a), self._hi(b)]}
+                "label": ((p + q) / 2, _L(d)), "hi": [self._hi(a), self._hi(b)]}
 
     def _do_edge(self, picks):
         (a,) = picks
         i = M.edge_info(a.sub)
-        lines = [f"邊 長度 = {_fmt(i['length'])} mm({M.EDGE_TYPES.get(i['type'], i['type'])})"]
-        label = f"L {_fmt(i['length'])}"
+        lines = [f"邊 長度 = {_L(i['length'])} {numfmt.UNIT}({M.EDGE_TYPES.get(i['type'], i['type'])})"]
+        label = f"L {_L(i['length'])}"
         if "radius" in i:
             c = i["center"]
-            lines.append(f"  半徑 R = {_fmt(i['radius'])}  直徑 D = {_fmt(i['diameter'])}  "
-                         f"圓心 ({_fmt(c.x)}, {_fmt(c.y)}, {_fmt(c.z)})")
-            label = f"R {_fmt(i['radius'])}  D {_fmt(i['diameter'])}"
+            lines.append(f"  半徑 R = {_L(i['radius'])}  直徑 D = {_L(i['diameter'])}  "
+                         f"圓心 ({_L(c.x)}, {_L(c.y)}, {_L(c.z)})")
+            label = f"R {_L(i['radius'])}  D {_L(i['diameter'])}"
         return {"text": "\n".join(lines), "lines": [], "points": [a.point], "label": (a.point, label),
                 "hi": [self._hi(a)]}
 
     def _do_face(self, picks):
         (a,) = picks
         i = M.face_info(a.sub)
-        lines = [f"面 面積 = {_fmt(i['area'])} mm²({M.FACE_TYPES.get(i['type'], i['type'])})"]
-        label = f"A {_fmt(i['area'])}"
+        lines = [f"面 面積 = {fmta(i['area'])} {numfmt.UNIT}²({M.FACE_TYPES.get(i['type'], i['type'])})"]
+        label = f"A {fmta(i['area'])}"
         if "normal" in i:
             n = i["normal"]
             lines.append(f"  法向 ({_fmt(n.x)}, {_fmt(n.y)}, {_fmt(n.z)})")
         if "radius" in i:
-            lines.append(f"  半徑 R = {_fmt(i['radius'])}" + (f"  直徑 D = {_fmt(i['diameter'])}" if "diameter" in i else ""))
-            label += f"  R {_fmt(i['radius'])}"
+            lines.append(f"  半徑 R = {_L(i['radius'])}" + (f"  直徑 D = {_L(i['diameter'])}" if "diameter" in i else ""))
+            label += f"  R {_L(i['radius'])}"
         c = i["center"]
-        lines.append(f"  中心 ({_fmt(c.x)}, {_fmt(c.y)}, {_fmt(c.z)})")
+        lines.append(f"  中心 ({_L(c.x)}, {_L(c.y)}, {_L(c.z)})")
         return {"text": "\n".join(lines), "lines": [], "points": [a.point], "label": (a.point, label),
                 "hi": [self._hi(a)]}
 
