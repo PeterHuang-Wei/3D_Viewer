@@ -104,7 +104,7 @@ def angle_between(a: cq.Shape, b: cq.Shape) -> dict:
 
 def body_properties(shape: cq.Shape) -> dict:
     bb = shape.BoundingBox(tolerance=1e-7)
-    return {"volume": shape.Volume(), "area": shape.Area(), "center": shape.Center(),
+    return {"volume": shape.Volume() if shape.Solids() else 0.0, "area": shape.Area(), "center": shape.Center(),
             "size": (bb.xlen, bb.ylen, bb.zlen),
             "min": (bb.xmin, bb.ymin, bb.zmin), "max": (bb.xmax, bb.ymax, bb.zmax)}
 

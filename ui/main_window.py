@@ -160,6 +160,12 @@ class MainWindow(QMainWindow):
         c.addAction(self._action("快速拉伸(輪廓參數)...", lambda _=None: self.on_create("extrude")))
         c.addAction(self._action("快速旋轉(輪廓參數)...", lambda _=None: self.on_create("revolve")))
 
+        um = bar.addMenu("曲面(&U)")
+        um.addAction(self._action("曲面拉伸(以草圖)...", self.on_surface_extrude))
+        um.addAction(self._action("偏移面(所選面,未選則整個曲面)...", self.on_surface_offset))
+        um.addAction(self._action("曲面修剪...", lambda: self._surface_modify("surface_trim")))
+        um.addAction(self._action("縫合曲面(封閉則成實體)...", self.on_surface_knit))
+        um.addAction(self._action("曲面加厚(成實體)...", lambda: self._surface_modify("thicken")))
         hm = bar.addMenu("說明(&H)")
         self.act_bridge = self._action("啟用 MCP 橋接(讓 LLM 即時控制此視窗)", self.toggle_bridge, checkable=True)
         hm.addAction(self.act_bridge)
@@ -1367,6 +1373,56 @@ class MainWindow(QMainWindow):
                 return
             params["target"] = int(v["target"].split(":")[0])
         self._run(lambda: self.doc.add_feature("sketch_loft", params))
+
+    # --- 曲面 ---
+    def on_surface_extrude(self):
+        sketches = self.doc.sketches
+        if not sketches:
+            QMessageBox.information(self, "曲面拉伸", "請先建立草圖(開放或封閉輪廓皆可)")
+            return
+        items = [f"{i}: {n}" for i, n, _ in sketches]
+        title, fields = SCHEMAS["surface_extrude"]
+        v = ask(title, [("sketch", "草圖", "combo", items)] + list(fields), self, initial={"sketch": items[-1]})
+        if v:
+            v["sketch"] = int(v["sketch"].split(":")[0])
+            self._run(lambda: self.doc.add_feature("surface_extrude", v))
+
+    def on_surface_offset(self):
+        bid = self._current_id()
+        if bid is None:
+            return
+        title, fields = SCHEMAS["surface_offset"]
+        v = ask(title, fields, self)
+        if v:
+            faces = sorted(self.scene.sel_faces) if self.scene.sel_body is not None else []
+            self._run(lambda: self.doc.add_feature("surface_offset", {**v, "body": bid, "faces": faces}))
+
+    def _surface_modify(self, kind):
+        bid = self._current_id()
+        if bid is None:
+            return
+        title, fields = SCHEMAS[kind]
+        v = ask(title, fields, self, initial={"plane": "鎖定平面" if self.wp else "XY"})
+        if not v:
+            return
+        params = {**v, "body": bid}
+        if v.get("plane") == "鎖定平面" and kind == "surface_trim" and not int(v.get("tool") or 0):
+            if not self.wp:
+                QMessageBox.information(self, title, "請先鎖定平面(F3),或改選 XY/XZ/YZ")
+                return
+            params = self._with_lock(params)
+        self._run(lambda: self.doc.add_feature(kind, params))
+
+    def on_surface_knit(self):
+        from core.surface import is_surface
+        surf = [str(b.id) for b in self.doc.bodies if is_surface(b.shape)]
+        if not surf:
+            QMessageBox.information(self, "縫合曲面", "目前沒有曲面體")
+            return
+        title, fields = SCHEMAS["surface_knit"]
+        v = ask(title, fields, self, initial={"bodies": ",".join(surf)})
+        if v:
+            self._run(lambda: self.doc.add_feature("surface_knit", v))
 
     def toggle_bridge(self, on=None):
         from ui.bridge import BridgeServer

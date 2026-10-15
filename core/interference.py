@@ -11,6 +11,8 @@ def check(bodies, tol: float = 1e-6, include_contact: bool = True):
     for i in range(len(bodies)):
         for j in range(i + 1, len(bodies)):
             (ia, na, sa), (ib, nb, sb) = bodies[i], bodies[j]
+            if not sa.Solids() or not sb.Solids():
+                continue                                  # 曲面不參與干涉檢查
             ba, bb = sa.BoundingBox(), sb.BoundingBox()
             if (ba.xmax < bb.xmin - tol or bb.xmax < ba.xmin - tol or ba.ymax < bb.ymin - tol
                     or bb.ymax < ba.ymin - tol or ba.zmax < bb.zmin - tol or bb.zmax < ba.zmin - tol):

@@ -186,3 +186,7 @@ python -m pytest tests
   `suppress_feature / rename_feature / move_feature / set_rollback`(特徵歷史)、`measure`(邊/面/角度/質量/干涉)、
   `export_drawing`(PDF/SVG/PNG/DXF 工程圖,含剖視)、`import_step`、`set_display`。
 - 檢視類工具(`set_section` 截面、`set_quality` 精細度、`set_view` 視角)需即時模式;`lock_plane` 兩種模式皆可,另有 `add_dimension_annotation`、`set_appearance`、`set_material`。
+
+## 曲面建模
+「曲面」選單:曲面拉伸(開放/封閉草圖,不封端)、偏移面、曲面修剪(用平面、實體或另一曲面;保留正側/負側或外側/內側)、
+縫合曲面(封閉則自動成為實體)、曲面加厚(單側/反側/對稱)。曲面體沒有體積,不能圓角或抽殼,也不參與質量與干涉計算。

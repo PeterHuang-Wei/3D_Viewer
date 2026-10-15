@@ -11,7 +11,7 @@ from . import features as F
 from . import paths as PA
 from . import measure as MS
 from .expr import evaluate_all, resolve_params
-from .ops import CREATORS, MODIFIERS, LABELS, PLACEABLE, sketch_solid, sweep_solid, loft_solid
+from .ops import SURFACE_KINDS, CREATORS, MODIFIERS, LABELS, PLACEABLE, sketch_solid, sweep_solid, loft_solid
 
 FORMAT_VERSION = 1
 
@@ -233,6 +233,8 @@ class Document:
                 bodies[feat.out_ids[0]] = (f"{name}(鏡射)", m)
             else:
                 bodies[p["body"]] = (name, shape.fuse(m).clean())
+        elif k in SURFACE_KINDS:
+            self._apply_surface(feat, k, p, bodies)
         elif k == "mate":
             from .assembly import mate_shape
             if p["fixed"] == p["moving"]:
@@ -264,6 +266,60 @@ class Document:
             del bodies[p["body"]]
         else:
             raise ValueError(f"未知特徵: {k}")
+
+    def _new_body(self, feat: Feature, bodies: dict, name: str, shape) -> None:
+        if not feat.out_ids:
+            feat.out_ids = [self._alloc()]
+        bodies[feat.out_ids[0]] = (f"{name}{feat.out_ids[0]}", shape)
+
+    def _apply_surface(self, feat: Feature, k: str, p: dict, bodies: dict) -> None:
+        from . import surface as SF
+        if k == "surface_extrude":
+            sk = bodies.get(p["sketch"], (None, None))[1]
+            if not (isinstance(sk, dict) and "entities" in sk):
+                raise ValueError("找不到草圖")
+            depth = -p["depth"] if p.get("flip") else p["depth"]
+            self._new_body(feat, bodies, "曲面", SF.extrude_surface(sk["entities"], sk["wp"], depth, p.get("sym", False)))
+        elif k == "surface_offset":
+            _, shape = bodies[p["body"]]
+            res = SF.offset_faces(shape, set(p.get("faces") or []), p["distance"])
+            self._new_body(feat, bodies, "偏移面", res)
+        elif k == "surface_trim":
+            name, shape = bodies[p["body"]]
+            if not SF.is_surface(shape):
+                raise ValueError("修剪只能用在曲面")
+            tool = int(p.get("tool") or 0)
+            if tool and (tool not in bodies or isinstance(bodies[tool][1], dict)):
+                raise ValueError("找不到工具實體")
+            if tool:
+                res = SF.trim_by_tool(shape, bodies[tool][1], p.get("keep", "正側"))
+            else:
+                wp = p.get("wp") if p.get("plane") == "鎖定平面" else F.WORLD_PLANES.get(p.get("plane", ""))
+                if wp is None:
+                    raise ValueError("修剪平面未指定(選 XY/XZ/YZ、先鎖定平面,或指定工具實體)")
+                if p.get("offset"):
+                    wp = F.offset_plane(wp, p["offset"])
+                res = SF.trim_by_plane(shape, wp, p.get("keep", "正側") in ("正側", "外側"))
+            bodies[p["body"]] = (name, res)
+        elif k == "surface_knit":
+            raw = p["bodies"]
+            ids = [int(i) for i in (raw.replace(",", " ").replace(";", " ").split() if isinstance(raw, str) else raw)]
+            if len(ids) < 1:
+                raise ValueError("請指定要縫合的實體編號")
+            for i in ids:
+                if i not in bodies or isinstance(bodies[i][1], dict):
+                    raise KeyError(i)
+            res = SF.knit([bodies[i][1] for i in ids], p.get("tol", 1e-3))
+            if p.get("keep"):
+                self._new_body(feat, bodies, "縫合", res)
+            else:
+                name = bodies[ids[0]][0]
+                for i in ids[1:]:
+                    del bodies[i]
+                bodies[ids[0]] = (name, res)
+        elif k == "thicken":
+            name, shape = bodies[p["body"]]
+            bodies[p["body"]] = (name, SF.thicken(shape, p["thickness"], p.get("mode", "單側")))
 
     def _alloc(self) -> int:
         self._next_id += 1

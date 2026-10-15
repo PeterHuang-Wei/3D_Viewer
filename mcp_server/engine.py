@@ -112,7 +112,7 @@ class Engine:
         bodies = []
         for b in d.bodies:
             p = MS.body_properties(b.shape)
-            bodies.append({"id": b.id, "name": b.name, "volume": _r(p["volume"]), "area": _r(p["area"]),
+            bodies.append({"id": b.id, "name": b.name, "type": "solid" if b.shape.Solids() else "surface", "volume": _r(p["volume"]), "area": _r(p["area"]),
                            "min": [_r(x) for x in p["min"]], "max": [_r(x) for x in p["max"]],
                            "material": d.materials.get(b.id, {}).get("material")})
         return {"ok": True, "path": d.path, "dirty": d.dirty, "bodies": bodies,

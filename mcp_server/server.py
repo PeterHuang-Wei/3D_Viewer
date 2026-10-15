@@ -15,6 +15,8 @@ INSTRUCTIONS = """控制 3D Viewer(CAD)。單位 mm、角度為度。流程:get_
 - add_feature 通用:kind 與欄位用 feature_kinds 查詢;常用 fillet {body, edges:[索引], r}、chamfer {body, edges, d}、boolean {op:'聯集'|'差集'|'交集', target, tool, keep}、
   translate/rotate {body,x,y,z}、shell {body, faces:[索引], thickness}。
 - 草圖可用 sketch_edit(修整/圓角/倒角/偏移/鏡射/陣列/投影)與 sketch_constrain(拘束與尺寸)精修。
+- 曲面:add_feature 的 surface_extrude{sketch,depth}/surface_offset{body,faces,distance}/surface_trim{body,plane|tool,keep}/
+  surface_knit{bodies:'1,2',tol}(封閉則成實體)/thicken{body,thickness,mode};get_state 的 type 為 surface 表示曲面體。
 - 失敗時回傳 error(中文),模型已自動還原,可修正參數後重試。"""
 
 app = _Server("3D Viewer", instructions=INSTRUCTIONS)

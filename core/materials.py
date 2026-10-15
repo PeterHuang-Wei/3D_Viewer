@@ -43,7 +43,7 @@ def principal_moments(inertia: np.ndarray):
 
 def assembly_props(items) -> dict:
     """items: [(名稱, 形狀, 密度)]。回傳 {"parts": [...], "mass","volume","com","inertia"}(慣性矩對整體質心)。"""
-    parts = [{"name": n, **mass_props(s, d)} for n, s, d in items]
+    parts = [{"name": n, **mass_props(s, d)} for n, s, d in items if s.Solids()]   # 曲面沒有體積,略過
     if not parts:
         raise ValueError("沒有實體")
     mass = sum(p["mass"] for p in parts)
