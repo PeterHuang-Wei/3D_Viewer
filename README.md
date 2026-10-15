@@ -205,3 +205,4 @@ python -m pytest tests
 - **擺放方向分析**:比較 6 個軸向與最大平面朝下的擺法,依支撐量、高度、底面接觸評分,選一個即套用(旋轉並落地,成為歷史特徵)。
 - **產生支撐實體**:在懸伸面下方產生可預覽/匯出的支撐(格狀 = 柱 + X/Y 牆,線狀 = X 牆,樹狀 = 稀疏柱近似);模型需已落在 Z = 0。
 - MCP:`print_check`、`print_support`、`print_orient`、`build_supports`。
+- 不想處理工作目錄時,可直接用 `python <專案路徑>\run_mcp.py` 啟動(例如 OpenCode 的 `"command": ["…\\.venv\\Scripts\\python.exe", "…\\run_mcp.py"]`)。
