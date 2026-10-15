@@ -15,6 +15,7 @@ from core import sketch2d as SK
 from core import sketch_solver as K
 from core import interference as IFC
 from core import drawing as DR
+from core import printprep as PP
 from core.model import Document
 from ui.schemas import SCHEMAS
 
@@ -492,6 +493,26 @@ class Engine:
     def op_list_materials(self):
         return {"ok": True, "materials": MAT.MATERIALS}
 
+    # --- 組合件顯示 ---
+    def op_set_explode(self, factor: float = 1.0, mode: str = "放射"):
+        """爆炸圖(僅改顯示):mode=放射/沿 X/沿 Y/沿 Z;factor=0 還原。"""
+        return self._add("explode", {"mode": mode, "factor": factor})
+
+    def op_create_group(self, name: str, bodies: list[int]):
+        """建立零件群組(同名會覆蓋);bodies 為空則解散。"""
+        return self._add("group", {"name": name, "bodies": bodies, "visible": True})
+
+    def op_show_group(self, name: str, visible: bool = True):
+        g = self.doc.groups.get(name)
+        if g is None:
+            raise EngineError(f"找不到群組 {name}(現有:{list(self.doc.groups)})")
+        self.doc.edit_feature(g["index"], {"visible": visible})
+        return {"ok": True, "visible": visible, **self._summary()}
+
+    def op_list_groups(self):
+        return {"ok": True, "groups": {n: {"bodies": g["bodies"], "visible": g["visible"]}
+                                       for n, g in self.doc.groups.items()}}
+
     # --- 特徵歷史 ---
     def _fi(self, index):
         if not 0 <= index < len(self.doc.features):
@@ -620,6 +641,61 @@ class Engine:
         if QApplication.instance() is None:
             os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
             Engine._app = QApplication(["3dviewer-mcp"])
+
+    # --- 3D 列印準備 ---
+    @staticmethod
+    def _pp_kw(threshold, density, support_type, scope, gap, filament_density, flow):
+        return dict(threshold=threshold, density_pct=density, support_type=support_type, scope=scope, gap=gap,
+                    filament_density=filament_density, flow=flow)
+
+    def op_print_check(self, body: int | None = None, path: str | None = None, bed=(220.0, 220.0, 250.0)):
+        """檢查實體(body)或 STL 檔(path):封閉性、法向、退化三角形、獨立殼、尺寸是否超出平台 bed=[x,y,z]。"""
+        if path:
+            if not os.path.exists(path):
+                raise EngineError(f"檔案不存在:{path}")
+            r = PP.check_mesh(*PP.read_stl(path))
+        else:
+            if body is None:
+                raise EngineError("請指定 body 或 path")
+            r = PP.check_shape(self._body(body).shape, tuple(bed))
+        return {"ok": True, **{k: (_r(v) if isinstance(v, float) else v) for k, v in r.items()}, "passed": r["ok"]}
+
+    def op_print_support(self, body: int, threshold: float = 45.0, density: float = 15.0, support_type: str = "格狀",
+                         scope: str = "全部", gap: float = 0.2, filament_density: float = 1.24, flow: float = 10.0):
+        """依目前擺放(Z 最低點為平台)估算懸伸面積、支撐體積、耗材重量與加時。"""
+        V, T = PP.shape_mesh(self._body(body).shape)
+        e = PP.support_estimate(V, T, **self._pp_kw(threshold, density, support_type, scope, gap, filament_density, flow))
+        return {"ok": True, **{k: (_r(v) if isinstance(v, float) else v) for k, v in e.items()
+                               if k in ("overhang_area", "overhang_triangles", "height", "base_area", "support_volume",
+                                        "unsupportable_area", "support_mass_g", "extra_time_min")}}
+
+    def op_print_orient(self, body: int, apply: int | None = None, top: int = 5, threshold: float = 45.0,
+                        density: float = 15.0, support_type: str = "格狀", scope: str = "全部", gap: float = 0.2,
+                        filament_density: float = 1.24, flow: float = 10.0):
+        """比較擺放方向(成本低者在前)。apply=名次(從 0 起算)則直接採用該擺放(旋轉並落地)。"""
+        shape = self._body(body).shape
+        V, T = PP.shape_mesh(shape)
+        rows = PP.analyze_orientations(V, T, top=top, **self._pp_kw(threshold, density, support_type, scope, gap,
+                                                                   filament_density, flow))
+        out = [{"rank": i, "name": r["name"], "cost": _r(r["cost"]), "support_volume": _r(r["support_volume"]),
+                "height": _r(r["height"]), "base_area": _r(r["base_area"]), "overhang_area": _r(r["overhang_area"])}
+               for i, r in enumerate(rows)]
+        res = {"ok": True, "candidates": out}
+        if apply is not None:
+            if not 0 <= apply < len(rows):
+                raise EngineError(f"apply 需介於 0~{len(rows) - 1}")
+            axis, ang = PP.axis_angle_from_matrix(rows[apply]["rotation"])
+            r2 = self._add("orient", {"body": body, "axis": [float(x) for x in axis], "angle": float(ang), "ground": True})
+            if not r2["ok"]:
+                return r2
+            res["applied"] = out[apply]["name"]
+        return res
+
+    def op_build_supports(self, body: int, threshold: float = 45.0, support_type: str = "格狀", spacing: float = 4.0,
+                          thickness: float = 0.8, gap: float = 0.2, scope: str = "全部"):
+        """產生支撐實體(新實體「支撐」)。模型需已落在 Z=0 平台(可先 print_orient apply)。"""
+        return self._add("supports", {"body": body, "threshold": threshold, "type": support_type, "spacing": spacing,
+                                      "thickness": thickness, "gap": gap, "scope": scope})
 
     # --- 輸出 ---
     def op_export_step(self, path: str):

@@ -105,6 +105,8 @@ def test_gui_insert_and_mate(tmp_path, monkeypatch):
     monkeypatch.setattr(mw, "ask", lambda title, fields, parent, **k: {f[0]: f[3] if f[2] != "combo" else f[3][0]
                                                                          for f in fields} | ({"x": 100} if title == "插入零件" else {}))
     w.on_insert_part()
+    from ui.dialogs import ParamDialog
+    monkeypatch.setattr(ParamDialog, "exec_", lambda self: ParamDialog.Accepted)      # 配合對話框直接接受預設值
     assert len(w.doc.bodies) == 2
     base, ins = w.doc.bodies
     # 步驟 1:零件底面;步驟 2:底座頂面

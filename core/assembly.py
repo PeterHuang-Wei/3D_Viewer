@@ -1,4 +1,4 @@
-"""組合件:插入零件(.v3d 專案)與配合(面貼合 / 同軸)。"""
+"""組合件:插入零件(.v3d 專案)與配合(面貼合 / 同軸 / 平行 / 垂直 / 角度 / 距離)。"""
 import numpy as np
 import cadquery as cq
 from OCP.BRepAdaptor import BRepAdaptor_Surface
@@ -7,7 +7,7 @@ from OCP.GeomAbs import GeomAbs_Cone, GeomAbs_Cylinder
 from . import features as F
 
 EPS = 1e-7
-MATE_TYPES = ("面貼合", "同軸")
+MATE_TYPES = ("面貼合", "同軸", "平行", "垂直", "角度", "距離")
 
 
 def project_shapes(data: dict, dx=0.0, dy=0.0, dz=0.0):
@@ -57,8 +57,43 @@ def _rot_to(shape, c, src, dst):
     return new, lambda p: c + F._rot(np.asarray(p, float) - c, axis, ang)
 
 
+def _turn(shape, pivot, nb, na, delta_deg):
+    """繞 pivot、軸 nb×na,把 nb 朝 na 轉 delta 度;回傳新形狀與點變換函式。"""
+    cr = np.cross(nb, na)
+    if np.linalg.norm(cr) < EPS:
+        helper = np.array([1.0, 0, 0]) if abs(nb[0]) < 0.9 else np.array([0, 1.0, 0])
+        cr = np.cross(nb, helper)
+    axis = cr / np.linalg.norm(cr)
+    if abs(delta_deg) < 1e-9:
+        return shape, lambda p: np.asarray(p, float)
+    pv = cq.Vector(*pivot)
+    new = shape.rotate(pv, pv + cq.Vector(*axis), delta_deg)
+    return new, lambda p: pivot + F._rot(np.asarray(p, float) - pivot, axis, delta_deg)
+
+
+def _angle_between(u, v):
+    return float(np.degrees(np.arctan2(np.linalg.norm(np.cross(u, v)), np.dot(u, v))))
+
+
+def _want(kind, angle, phi, ta, tb):
+    """方向向量 nb 與 na 之間期望的夾角(度)。同類(面-面 / 軸-軸)與混合(面-軸)的語意不同。"""
+    near = 0.0 if phi <= 90 else 180.0
+    if ta == tb:
+        plane_pair = ta == "plane"
+        return {"平行": near, "垂直": 90.0}.get(kind, 180.0 - angle if plane_pair else angle)
+    return {"平行": 90.0, "垂直": near}.get(kind, 90.0 - angle)        # 軸線與平面:平行 = 軸線 ⟂ 法向
+
+
+def _orient(moving, pivot, nb, na, kind, angle, flip, ta, tb):
+    """平行 / 垂直 / 角度:只旋轉(繞 pivot),使 nb 與 na 的夾角達到目標;flip 取另一側的解。
+    面對面的「角度」是兩平面之間的夾角(0° = 貼平,法向夾角 = 180° − 夾角)。"""
+    phi = _angle_between(nb, na)
+    want = _want(kind, angle, phi, ta, tb)
+    return _turn(moving, pivot, nb, na, (phi + want) if flip else (phi - want))
+
+
 def mate_shape(fixed: cq.Shape, face_a: int, moving: cq.Shape, face_b: int, kind: str,
-               offset: float = 0.0, flip: bool = False) -> cq.Shape:
+               offset: float = 0.0, flip: bool = False, angle: float = 0.0) -> cq.Shape:
     """移動 moving 使其第 face_b 面與 fixed 的第 face_a 面配合。
     面貼合:兩平面法向相反並相距 offset(flip 則同向);同軸:圓柱/圓錐軸線重合(僅平行者不再旋轉)。
     已經滿足的自由度(例如已反向的法向、同軸時的軸向位置)不會被改動,方便連續配合。"""
@@ -84,5 +119,30 @@ def mate_shape(fixed: cq.Shape, face_a: int, moving: cq.Shape, face_b: int, kind
             pb = rot(pb)
         d = pa - pb
         d = d - na * float(np.dot(d, na))             # 只做垂直軸向的平移
+        return F.translate(moving, *d)
+    if kind in ("平行", "垂直", "角度"):
+        if not -180 <= angle <= 180:
+            raise ValueError("角度需介於 -180° 與 180°")
+        return _orient(moving, pb, nb, na, kind, angle, flip, ta, tb)[0]
+    if kind == "距離":
+        if ta != tb:
+            raise ValueError("距離配合需要兩個平面,或兩個圓柱/圓錐面")
+        if ta == "plane":
+            moving, rot = _turn(moving, pb, nb, na, _angle_between(nb, na) - (0.0 if flip else 180.0))
+            pb = rot(pb)
+            return F.translate(moving, *(na * (float(np.dot(pa - pb, na)) + offset)))
+        # 軸線:先平行,再讓兩軸線相距 offset
+        phi = _angle_between(nb, na)
+        moving, rot = _turn(moving, pb, nb, na, phi if phi <= 90 else phi - 180.0)
+        pb = rot(pb)
+        d = pa - pb
+        d = d - na * float(np.dot(d, na))
+        n = np.linalg.norm(d)
+        if offset > 1e-9:
+            if n > EPS:
+                d = d - d / n * offset
+            else:
+                helper = np.array([1.0, 0, 0]) if abs(na[0]) < 0.9 else np.array([0, 1.0, 0])
+                d = -np.cross(na, helper) / np.linalg.norm(np.cross(na, helper)) * offset
         return F.translate(moving, *d)
     raise ValueError(f"未知配合類型:{kind}")

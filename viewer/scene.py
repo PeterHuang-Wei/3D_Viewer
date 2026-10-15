@@ -107,6 +107,7 @@ class Scene:
         self._meshes, self._edge_idx, self._edge_polys = [], [], []
         appearance = doc.appearance
         self._body_actors = []
+        shifts = doc.explode_offsets()                      # 爆炸圖:只移動顯示用的網格
         for i, body in enumerate(doc.bodies):
             ap = appearance.get(body.id, {})
             if not ap.get("visible", True):                 # 隱藏的實體:保留空位使索引對齊,不畫也不能點選
@@ -118,6 +119,9 @@ class Scene:
             q = QUALITY[self.quality]
             mesh = shape_to_mesh(body.shape, q["tol"], q["ang"])
             edges = shape_to_edges(body.shape, q["edge_pts"])
+            if body.id in shifts:
+                mesh = mesh.translate(shifts[body.id], inplace=False)
+                edges = edges.translate(shifts[body.id], inplace=False)
             self._meshes.append(mesh)
             self._edge_polys.append(edges)
             self._edge_idx.append(EdgeIndex(edges))
@@ -146,6 +150,17 @@ class Scene:
         self.measure.redraw()
         if reset_camera:
             self.set_view("等角視")
+
+    # --- 預覽幽靈(例如配合預覽) ---
+    def set_ghost(self, shape) -> None:
+        """以半透明橘色顯示預覽形狀;None 清除。"""
+        self.plotter.remove_actor("ghost", render=False)
+        if shape is not None:
+            q = QUALITY[self.quality]
+            mesh = shape_to_mesh(shape, q["tol"], q["ang"])
+            if mesh.n_cells:
+                self.plotter.add_mesh(mesh, color="#ffa040", opacity=0.55, name="ghost", pickable=False)
+        self.plotter.render()
 
     # --- 截面視圖 ---
     def set_section(self, origin, normal) -> None:

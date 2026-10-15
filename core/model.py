@@ -107,6 +107,63 @@ class Document:
             for key in ("color", "opacity", "visible"):
                 if key in f.params:
                     cur[key] = f.params[key]
+        for g in self.groups.values():                       # 群組隱藏優先
+            if not g["visible"]:
+                for i in g["bodies"]:
+                    out.setdefault(i, {"color": None, "opacity": 1.0, "visible": True})["visible"] = False
+        return out
+
+    def _active(self, kind: str):
+        """依序產生目前有效(未抑制、未超過回溯點、無錯誤)的某種特徵 (索引, 特徵)。"""
+        for k, f in enumerate(self.features):
+            if f.kind == kind and not f.suppressed and not (self.rollback is not None and k > self.rollback) \
+                    and not f.error:
+                yield k, f
+
+    @property
+    def groups(self) -> dict:
+        """零件群組 {名稱: {"bodies": [現存實體編號], "visible": bool, "index": 特徵索引}}(同名後者覆蓋;bodies 空 = 解散)。"""
+        alive = {b.id for b in self.bodies}
+        out = {}
+        for k, f in self._active("group"):
+            p = f.params
+            if not p.get("bodies"):
+                out.pop(p["name"], None)
+                continue
+            out[p["name"]] = {"bodies": [i for i in p["bodies"] if i in alive], "visible": p.get("visible", True),
+                              "index": k}
+        return out
+
+    @property
+    def explode(self):
+        """目前的爆炸圖設定 {"mode","factor"};未啟用為 None。"""
+        cur = None
+        for _, f in self._active("explode"):
+            cur = {"mode": f.params.get("mode", "放射"), "factor": float(f.params.get("factor", 0))}
+        return cur if cur and cur["factor"] > 0 else None
+
+    def explode_offsets(self) -> dict:
+        """爆炸圖各實體的位移 {編號: (dx,dy,dz)}(只用於顯示)。"""
+        ex = self.explode
+        bodies = self.bodies
+        if not ex or len(bodies) < 2:
+            return {}
+        import numpy as np
+        centers = {}
+        for b in bodies:
+            bb = b.shape.BoundingBox()
+            centers[b.id] = np.array([(bb.xmin + bb.xmax) / 2, (bb.ymin + bb.ymax) / 2, (bb.zmin + bb.zmax) / 2])
+        allc = np.array(list(centers.values()))
+        mid = (allc.min(axis=0) + allc.max(axis=0)) / 2
+        out = {}
+        for i, c in centers.items():
+            d = c - mid
+            if ex["mode"] in ("沿 X", "沿 Y", "沿 Z"):
+                m = np.zeros(3)
+                k = "XYZ".index(ex["mode"][-1])
+                m[k] = d[k]
+                d = m
+            out[i] = tuple(float(x) for x in d * ex["factor"])
         return out
 
     @property
@@ -160,6 +217,20 @@ class Document:
             op = p.get("opacity", 1.0)
             if not 0.05 <= op <= 1.0:
                 raise ValueError("透明度需介於 5% 與 100%")
+        elif k == "explode":
+            if p.get("mode", "放射") not in ("放射", "沿 X", "沿 Y", "沿 Z"):
+                raise ValueError("爆炸方式需為 放射 / 沿 X / 沿 Y / 沿 Z")
+            if p.get("factor", 0) < 0:
+                raise ValueError("爆炸係數不可為負")
+        elif k == "group":
+            if not str(p.get("name", "")).strip():
+                raise ValueError("群組需要名稱")
+            raw = p.get("bodies") or []
+            ids = [int(float(i)) for i in (raw.replace(",", " ").replace(";", " ").split() if isinstance(raw, str) else raw)]
+            feat.params["bodies"] = ids                      # 文字欄位正規化成編號清單
+            for i in ids:
+                if i not in bodies or isinstance(bodies[i][1], dict):
+                    raise KeyError(i)
         elif k == "material":
             if p["body"] not in bodies:
                 raise KeyError(p["body"])
@@ -235,6 +306,17 @@ class Document:
                 bodies[p["body"]] = (name, shape.fuse(m).clean())
         elif k in SURFACE_KINDS:
             self._apply_surface(feat, k, p, bodies)
+        elif k == "supports":
+            from . import printprep as PP
+            name, shape = bodies[p["body"]]
+            if not shape.Solids():
+                raise ValueError("只能替實體產生支撐")
+            bb = shape.BoundingBox()
+            if abs(bb.zmin) > 1e-6:
+                raise ValueError("模型尚未落在列印平台上(Z 最低點需為 0),請先用「列印擺放」落地")
+            sup = PP.build_supports(shape, p.get("threshold", 45.0), p.get("type", "格狀"), p.get("spacing", 4.0),
+                                    p.get("thickness", 0.8), p.get("gap", 0.2), p.get("scope", "全部"))
+            self._new_body(feat, bodies, "支撐", sup)
         elif k == "mate":
             from .assembly import mate_shape
             if p["fixed"] == p["moving"]:
@@ -242,7 +324,7 @@ class Document:
             _, fx = bodies[p["fixed"]]
             name, mv = bodies[p["moving"]]
             bodies[p["moving"]] = (name, mate_shape(fx, p["face_a"], mv, p["face_b"], p["type"],
-                                                    p.get("offset", 0.0), p.get("flip", False)))
+                                                    p.get("offset", 0.0), p.get("flip", False), p.get("angle", 0.0)))
         elif k == "rib":
             name, shape = bodies[p["body"]]
             sk = bodies.get(p["sketch"], (None, None))[1]

@@ -1,4 +1,5 @@
 """通用參數對話框(繁體中文)。數值欄位可輸入數字,或以 = 開頭的算式(可引用「變數與公式」,例如 =板厚/2)。"""
+from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtWidgets import (
     QDialog, QFormLayout, QDialogButtonBox, QComboBox, QCheckBox, QLineEdit, QMessageBox,
 )
@@ -22,6 +23,8 @@ def parse_num(text: str):
 class ParamDialog(QDialog):
     """fields: [(key, 標籤, 型別, 預設/選項)],型別: num / combo / bool / text"""
 
+    changed = pyqtSignal()            # 任一欄位改變(供即時預覽)
+
     def __init__(self, title, fields, parent=None):
         super().__init__(parent)
         self.setWindowTitle(title)
@@ -40,6 +43,8 @@ class ParamDialog(QDialog):
                 w.setChecked(arg)
             else:
                 w = QLineEdit(arg)
+            (w.textChanged if isinstance(w, QLineEdit) else w.currentTextChanged if isinstance(w, QComboBox)
+             else w.toggled).connect(lambda *_: self.changed.emit())
             self._w[key] = (kind, w)
             self._labels[key] = label
             form.addRow(label, w)

@@ -14,6 +14,8 @@ INSTRUCTIONS = """控制 3D Viewer(CAD)。單位 mm、角度為度。流程:get_
 - 草圖:create_sketch 之後用 add_feature('sketch_extrude', {'sketch': 草圖編號, 'depth': ...}) 拉伸;op 可為 新實體/聯集/切除(切除與聯集需 target 實體編號)。
 - add_feature 通用:kind 與欄位用 feature_kinds 查詢;常用 fillet {body, edges:[索引], r}、chamfer {body, edges, d}、boolean {op:'聯集'|'差集'|'交集', target, tool, keep}、
   translate/rotate {body,x,y,z}、shell {body, faces:[索引], thickness}。
+- 配合 mate 的 type:面貼合/同軸/平行/垂直/角度/距離(欄位 offset 間距、angle 夾角、flip);組合件顯示用 set_explode / create_group / show_group。
+- 3D 列印:print_check → print_orient(apply 採用擺放)→ print_support 預估 → build_supports 產生支撐 → export_stl。
 - 草圖可用 sketch_edit(修整/圓角/倒角/偏移/鏡射/陣列/投影)與 sketch_constrain(拘束與尺寸)精修。
 - 曲面:add_feature 的 surface_extrude{sketch,depth}/surface_offset{body,faces,distance}/surface_trim{body,plane|tool,keep}/
   surface_knit{bodies:'1,2',tol}(封閉則成實體)/thicken{body,thickness,mode};get_state 的 type 為 surface 表示曲面體。
@@ -304,6 +306,62 @@ def set_material(body: int, material: str, density: float = 1.0) -> dict:
 def list_materials() -> dict:
     """列出內建材料與密度(g/cm³)。"""
     return _call("list_materials")
+
+
+@app.tool()
+def set_explode(factor: float = 1.0, mode: str = "放射") -> dict:
+    """組合件爆炸圖(僅改變顯示,不動幾何):mode=放射/沿 X/沿 Y/沿 Z,factor=0 還原。"""
+    return _call("set_explode", factor=factor, mode=mode)
+
+
+@app.tool()
+def create_group(name: str, bodies: list[int]) -> dict:
+    """建立零件群組(同名覆蓋;bodies 給空清單則解散)。"""
+    return _call("create_group", name=name, bodies=bodies)
+
+
+@app.tool()
+def show_group(name: str, visible: bool = True) -> dict:
+    """顯示或隱藏整個零件群組。"""
+    return _call("show_group", name=name, visible=visible)
+
+
+@app.tool()
+def list_groups() -> dict:
+    """列出零件群組、成員與可見狀態。"""
+    return _call("list_groups")
+
+
+@app.tool()
+def print_check(body: int | None = None, path: str | None = None, bed: list[float] | None = None) -> dict:
+    """3D 列印檢查實體(body)或 STL 檔(path):封閉性、法向方向、非流形邊、退化三角形、獨立殼數、
+    是否超出列印平台 bed=[x,y,z](預設 220×220×250)。passed=True 才適合列印。"""
+    return _call("print_check", body=body, path=path, bed=bed or [220.0, 220.0, 250.0])
+
+
+@app.tool()
+def print_support(body: int, threshold: float = 45.0, density: float = 15.0, support_type: str = "格狀",
+                  scope: str = "全部", gap: float = 0.2, filament_density: float = 1.24, flow: float = 10.0) -> dict:
+    """支撐預估(幾何近似):依目前擺放(Z 最低點為平台)計算懸伸面積與支撐體積/重量/加時。
+    threshold 懸伸角度門檻(度);support_type 格狀/線狀/樹狀;density 支撐密度 %;scope 全部/僅平台。"""
+    return _call("print_support", body=body, threshold=threshold, density=density, support_type=support_type,
+                 scope=scope, gap=gap, filament_density=filament_density, flow=flow)
+
+
+@app.tool()
+def print_orient(body: int, apply: int | None = None, top: int = 5, threshold: float = 45.0, density: float = 15.0,
+                 support_type: str = "格狀", scope: str = "全部", gap: float = 0.2) -> dict:
+    """比較候選擺放方向(6 軸向 + 大平面朝下),依支撐量/高度/底面接觸評分排序;apply=名次(0 起算)則直接採用(旋轉並落地)。"""
+    return _call("print_orient", body=body, apply=apply, top=top, threshold=threshold, density=density,
+                 support_type=support_type, scope=scope, gap=gap)
+
+
+@app.tool()
+def build_supports(body: int, threshold: float = 45.0, support_type: str = "格狀", spacing: float = 4.0,
+                   thickness: float = 0.8, gap: float = 0.2, scope: str = "全部") -> dict:
+    """在懸伸面下方產生支撐實體(格狀=柱+X/Y牆,線狀=X牆,樹狀=稀疏柱近似),成為新實體;模型需已落在 Z=0。"""
+    return _call("build_supports", body=body, threshold=threshold, support_type=support_type, spacing=spacing,
+                 thickness=thickness, gap=gap, scope=scope)
 
 
 def main():

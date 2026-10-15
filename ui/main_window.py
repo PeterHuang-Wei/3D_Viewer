@@ -70,6 +70,14 @@ class MainWindow(QMainWindow):
         sdock = QDockWidget("草圖(雙擊編輯)", self)
         sdock.setWidget(self.sketch_list)
         self.addDockWidget(Qt.LeftDockWidgetArea, sdock)
+        self.group_list = QListWidget()                 # 零件群組(勾選 = 顯示)
+        self.group_list.itemChanged.connect(self._on_group_toggled)
+        self.group_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.group_list.customContextMenuRequested.connect(self._group_menu)
+        gdock = QDockWidget("零件群組(勾選顯示)", self)
+        gdock.setWidget(self.group_list)
+        self.addDockWidget(Qt.LeftDockWidgetArea, gdock)
+        self.tabifyDockWidget(docks[0], gdock)
         self.tabifyDockWidget(docks[0], sdock)
         self.tabifyDockWidget(docks[0], hdock)
         self.tabifyDockWidget(docks[0], adock)
@@ -166,6 +174,13 @@ class MainWindow(QMainWindow):
         um.addAction(self._action("曲面修剪...", lambda: self._surface_modify("surface_trim")))
         um.addAction(self._action("縫合曲面(封閉則成實體)...", self.on_surface_knit))
         um.addAction(self._action("曲面加厚(成實體)...", lambda: self._surface_modify("thicken")))
+        pm = bar.addMenu("列印(&P)")
+        pm.addAction(self._action("檢查所選實體(封閉性/法向/尺寸)...", self.on_print_check))
+        pm.addAction(self._action("檢查 STL 檔案...", self.on_print_check_stl))
+        pm.addSeparator()
+        pm.addAction(self._action("支撐設定與預估(紅色為懸伸面)...", self.on_print_support))
+        pm.addAction(self._action("擺放方向分析...", self.on_print_orient))
+        pm.addAction(self._action("產生支撐實體...", self.on_print_build_supports))
         hm = bar.addMenu("說明(&H)")
         self.act_bridge = self._action("啟用 MCP 橋接(讓 LLM 即時控制此視窗)", self.toggle_bridge, checkable=True)
         hm.addAction(self.act_bridge)
@@ -174,7 +189,12 @@ class MainWindow(QMainWindow):
         am.addAction(self._action("插入零件(.v3d / STEP)...", self.on_insert_part))
         am.addSeparator()
         am.addAction(self._action("配合步驟 1:記錄要移動零件的所選面", self.on_mate_pick_moving))
-        am.addAction(self._action("配合步驟 2:對固定零件的所選面進行配合...", self.on_mate_apply))
+        am.addAction(self._action("配合步驟 2:對固定零件的所選面進行配合(含預覽)...", self.on_mate_apply))
+        am.addSeparator()
+        am.addAction(self._action("爆炸圖...", self.on_explode))
+        am.addAction(self._action("還原爆炸圖", lambda: self._run(lambda: self.doc.add_feature(
+            "explode", {"mode": "放射", "factor": 0}))))
+        am.addAction(self._action("建立零件群組...", self.on_group_create))
         sk = bar.addMenu("草圖(&S)")
         sk.addAction(self._action("在鎖定平面上新建草圖", self.on_new_sketch, "F4"))
         sk.addAction(self._action("編輯所選草圖...", self.on_edit_sketch))
@@ -1374,6 +1394,173 @@ class MainWindow(QMainWindow):
             params["target"] = int(v["target"].split(":")[0])
         self._run(lambda: self.doc.add_feature("sketch_loft", params))
 
+    # --- 3D 列印準備 ---
+    def _print_report(self, title, lines):
+        text = "\n".join(lines)
+        self.measure_text.appendPlainText(text + "\n")
+        self.measure_dock.show()
+        QMessageBox.information(self, title, text)
+
+    def _body_for_print(self):
+        bid = self._current_id()
+        if bid is None:
+            return None
+        return next(b for b in self.doc.bodies if b.id == bid)
+
+    def on_print_check(self):
+        from core import printprep as PP
+        b = self._body_for_print()
+        if b is None:
+            return
+        title, fields = SCHEMAS["print_check"]
+        v = ask(title, fields, self)
+        if not v:
+            return
+        try:
+            r = PP.check_shape(b.shape, (v["bx"], v["by"], v["bz"]))
+        except ValueError as e:
+            QMessageBox.warning(self, "列印檢查", str(e))
+            return
+        self._print_report("列印檢查", [
+            f"實體:{b.name}", f"三角形 {r['triangles']}、頂點 {r['vertices']}、獨立殼 {r['shells']}",
+            f"體積 {fmtv(r['volume'])} {numfmt.UNIT}³;尺寸 {' × '.join(fmtl(x) for x in r['size'])} {numfmt.UNIT}",
+            "結果:" + ("全部通過,適合列印" if r["ok"] else "發現問題")] + [f"  • {i}" for i in r["issues"]])
+
+    def on_print_check_stl(self):
+        from core import printprep as PP
+        path, _ = QFileDialog.getOpenFileName(self, "檢查 STL", "", STL_FILTER)
+        if not path:
+            return
+        try:
+            V, T = PP.read_stl(path)
+            r = PP.check_mesh(V, T)
+        except (ValueError, OSError) as e:
+            QMessageBox.warning(self, "檢查 STL", str(e))
+            return
+        self._print_report("檢查 STL", [
+            os.path.basename(path), f"三角形 {r['triangles']}、頂點 {r['vertices']}、獨立殼 {r['shells']}",
+            f"體積 {fmtv(abs(r['volume']))} {numfmt.UNIT}³",
+            "結果:" + ("全部通過" if r["ok"] else "發現問題")] + [f"  • {i}" for i in r["issues"]])
+
+    def _ask_support(self):
+        title, fields = SCHEMAS["print_support"]
+        v = ask(title, fields, self, initial=getattr(self, "_print_params", None))
+        if v:
+            self._print_params = v
+        return v
+
+    @staticmethod
+    def _support_kw(v):
+        return dict(threshold=v["threshold"], density_pct=v["density"], support_type=v["type"], scope=v["scope"],
+                    gap=v["gap"], filament_density=v["fdens"], flow=v["flow"])
+
+    def on_print_support(self):
+        import pyvista as pv
+        from core import printprep as PP
+        b = self._body_for_print()
+        if b is None:
+            return
+        v = self._ask_support()
+        if not v:
+            return
+        try:
+            V, T = PP.shape_mesh(b.shape)
+            est = PP.support_estimate(V, T, **self._support_kw(v))
+        except ValueError as e:
+            QMessageBox.warning(self, "支撐預估", str(e))
+            return
+        m = est["overhang_mask"]
+        if m.any():
+            zmin = est["mesh_vertices"][:, 2].min()
+            tris = est["mesh_tris"][m]
+            mesh = pv.PolyData(est["mesh_vertices"], np.hstack([np.full((len(tris), 1), 3), tris]).ravel())
+            c = mesh.center
+            self.scene.measure.add_marker(c, "OVH", mesh=mesh)
+        lines = [f"實體:{b.name}(預設以目前擺放方向,Z 最低點為列印平台)",
+                 f"懸伸角度門檻 {v['threshold']:g}°,類型 {v['type']},密度 {v['density']:g}%,範圍 {v['scope']}",
+                 f"懸伸面積:{fmta(est['overhang_area'])} {numfmt.UNIT}²;模型高度 {fmtl(est['height'])} {numfmt.UNIT}",
+                 f"預估支撐體積:{fmtv(est['support_volume'])} {numfmt.UNIT}³(約 {fmtn(est['support_mass_g'])} g,"
+                 f"加時約 {fmtn(est['extra_time_min'])} 分鐘)"]
+        if est["unsupportable_area"] > 0:
+            lines.append(f"※ 有 {fmta(est['unsupportable_area'])} {numfmt.UNIT}² 的懸伸區落在模型上,範圍「僅平台」無法支撐,"
+                         "建議改範圍為「全部」或調整擺放方向")
+        lines.append("※ 此為幾何近似估算,實際用量以切片軟體為準")
+        self._print_report("支撐預估", lines)
+
+    def on_print_orient(self):
+        from core import printprep as PP
+        b = self._body_for_print()
+        if b is None:
+            return
+        v = self._ask_support()
+        if not v:
+            return
+        try:
+            V, T = PP.shape_mesh(b.shape)
+            rows = PP.analyze_orientations(V, T, **self._support_kw(v))
+        except ValueError as e:
+            QMessageBox.warning(self, "擺放方向分析", str(e))
+            return
+        items = [f"{i + 1}. {r['name']} — 支撐 {fmtv(r['support_volume'])} {numfmt.UNIT}³、高 {fmtl(r['height'])} {numfmt.UNIT}、"
+                 f"底面接觸 {fmta(r['base_area'])} {numfmt.UNIT}²" for i, r in enumerate(rows)]
+        text, ok = QInputDialog.getItem(self, "擺放方向分析(成本低者在前)", "選擇要採用的擺放(取消 = 不套用):", items, 0, False)
+        if not ok:
+            return
+        r = rows[items.index(text)]
+        axis, ang = PP.axis_angle_from_matrix(r["rotation"])
+        self._run(lambda: self.doc.add_feature("orient", {"body": b.id, "axis": [float(x) for x in axis],
+                                                          "angle": float(ang), "ground": True}))
+
+    def on_print_build_supports(self):
+        b = self._body_for_print()
+        if b is None:
+            return
+        title, fields = SCHEMAS["supports"]
+        v = ask(title + "(模型需已落在 Z=0 平台上)", fields, self)
+        if v:
+            self._run(lambda: self.doc.add_feature("supports", {**v, "body": b.id}))
+
+    # --- 爆炸圖 / 群組 ---
+    def on_explode(self):
+        if len(self.doc.bodies) < 2:
+            QMessageBox.information(self, "爆炸圖", "至少需要兩個實體")
+            return
+        title, fields = SCHEMAS["explode"]
+        v = ask(title + "(量測與選取請先還原)", fields, self,
+                initial={"factor": (self.doc.explode or {"factor": 1.0})["factor"]})
+        if v:
+            self._run(lambda: self.doc.add_feature("explode", v))
+
+    def on_group_create(self):
+        if not self.doc.bodies:
+            return
+        title, fields = SCHEMAS["group"]
+        cur = self.tree.currentRow()
+        default = str(self.doc.bodies[cur].id) if 0 <= cur < len(self.doc.bodies) else ""
+        v = ask(title, fields, self, initial={"bodies": default, "name": f"群組{len(self.doc.groups) + 1}"})
+        if v:
+            self._run(lambda: self.doc.add_feature("group", {**v, "visible": True}))
+
+    def _on_group_toggled(self, item):
+        if getattr(self, "_filling_groups", False):
+            return
+        g = self.doc.groups.get(item.data(Qt.UserRole))
+        if g is None:
+            return
+        vis = item.checkState() == Qt.Checked
+        if vis != g["visible"]:
+            self.doc.edit_feature(g["index"], {"visible": vis})
+            self._update(reset_camera=False)
+
+    def _group_menu(self, pos):
+        item = self.group_list.itemAt(pos)
+        if item is None:
+            return
+        m = QMenu(self)
+        m.addAction("解散群組", lambda: self._run(lambda: self.doc.add_feature(
+            "group", {"name": item.data(Qt.UserRole), "bodies": []})))
+        m.exec_(self.group_list.mapToGlobal(pos))
+
     # --- 曲面 ---
     def on_surface_extrude(self):
         sketches = self.doc.sketches
@@ -1485,11 +1672,35 @@ class MainWindow(QMainWindow):
         if not r:
             return
         title, fields = SCHEMAS["mate"]
-        v = ask(title, fields, self)
+        v = self._ask_mate(title, fields, r, mv)
         if v:
             self._run(lambda: self.doc.add_feature("mate", {**v, "fixed": r[0], "face_a": r[1],
                                                             "moving": mv[0], "face_b": mv[1]}))
             self._mate_moving = None
+
+    def _ask_mate(self, title, fields, fixed, moving):
+        """配合參數對話框,改動欄位時在畫面上以半透明橘色預覽配合後的位置。"""
+        from core.assembly import mate_shape
+        from core.expr import resolve_params
+        from ui.dialogs import ParamDialog
+        bodies = {b.id: b.shape for b in self.doc.bodies}
+        dlg = ParamDialog(title + "(橘色為預覽)", fields, self)
+
+        def preview():
+            try:
+                v = resolve_params(dlg.values(), self.doc._values)
+                shape = mate_shape(bodies[fixed[0]], fixed[1], bodies[moving[0]], moving[1], v["type"],
+                                   v["offset"], v["flip"], v["angle"])
+            except Exception:  # noqa: BLE001
+                shape = None
+            self.scene.set_ghost(shape)
+
+        dlg.changed.connect(preview)
+        preview()
+        try:
+            return dlg.values() if dlg.exec_() == dlg.Accepted else None
+        finally:
+            self.scene.set_ghost(None)
 
     def on_draft(self):
         s = self.scene
@@ -1750,6 +1961,15 @@ class MainWindow(QMainWindow):
                             for b in self.doc.bodies])
         self.ann_list.clear()
         self.ann_list.addItems([f"{i}: {n}" for i, n, _ in self.doc.annotations])
+        self._filling_groups = True
+        self.group_list.clear()
+        for name, g in self.doc.groups.items():
+            it = QListWidgetItem(f"{name}({len(g['bodies'])} 個實體)")
+            it.setData(Qt.UserRole, name)
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Checked if g["visible"] else Qt.Unchecked)
+            self.group_list.addItem(it)
+        self._filling_groups = False
         self.helix_list.clear()
         self.helix_list.addItems([f"{i}: {n}" for i, n, _ in self.doc.helices])
         self.sketch_list.clear()
